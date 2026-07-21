@@ -1,0 +1,318 @@
+# ============================================================
+# Docker Compose 集成测试环境配置
+# ============================================================
+# 项目名称：所有容器以 oa-rag-integration 为前缀命名
+# 用途：开发环境与预发布前的集成验证，非高可用生产拓扑
+# 
+# 面试点：Docker Compose 在 RAG 项目中的作用
+# - 一键启动完整基础设施栈（数据库 + 向量库 + 搜索引擎 + 对象存储 + 消息队列）
+# - 服务编排：通过 depends_on + healthcheck 控制启动顺序
+# - 环境一致性：开发/测试/CI 使用同一份 compose 文件
+# - 与 docker-compose.yml（生产）的区别：本文件包含外部服务集成验证
+name: oa-rag-integration
+
+# 单节点集成栈，用于开发环境和预发布检查。
+# 验证各 provider 集成的连通性，非高可用生产拓扑。
+services:
+  # ============================================================
+  # PostgreSQL 16：关系型数据库
+  # 存储：文档元数据、用户信息、权限、评测结果、后台任务状态等
+  # ============================================================
+  postgres:
+    image: postgres:16-alpine             # Alpine 版本镜像更小（~250MB vs ~400MB）
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-oa_rag}           # 数据库名，默认 oa_rag
+      POSTGRES_USER: ${POSTGRES_USER:-rag_app}       # 用户名，默认 rag_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rag_dev_password}  # 密码，默认开发密码
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"     # 映射端口，默认 5432
+    volumes:
+      - postgres_data:/var/lib/postgresql/data  # 持久化数据目录
+    healthcheck:
+      # pg_isready：PostgreSQL 官方连接就绪检查工具
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s     # 每 5 秒检查一次
+      timeout: 5s      # 单次检查超时时间
+      retries: 20      # 最多重试 20 次（即最多等 100 秒）
+
+  # ============================================================
+  # Redis 7：内存缓存 + 消息队列 Broker
+  # 用途：Celery 任务队列、会话缓存、分布式锁
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data                  # 持久化 RDB/AOF 数据
+    command: ["redis-server", "--appendonly", "yes"]  # 开启 AOF 持久化（防止重启丢数据）
+    healthcheck:
+      # redis-cli ping → 返回 PONG 表示服务正常
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ============================================================
+  # etcd v3.5：分布式键值存储
+  # 用途：Milvus 的元数据存储（collection schema、索引信息等）
+  # ============================================================
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18    # 固定版本，避免兼容性问题
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision  # 自动压缩模式：按 revision 压缩历史版本
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"  # 保留最近 1000 个 revision
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"  # 存储配额 4GB（防止磁盘写满）
+      ETCD_SNAPSHOT_COUNT: "50000"            # 每 50000 次写入自动快照
+    volumes:
+      - etcd_data:/etcd                   # 持久化 etcd 数据
+    command: >-                            # YAML 多行字符串（折行符，去掉换行）
+      etcd --advertise-client-urls=http://127.0.0.1:2379
+      --listen-client-urls=http://0.0.0.0:2379 --data-dir=/etcd
+    healthcheck:
+      # etcdctl endpoint health：检查 etcd 集群节点健康状态
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ============================================================
+  # MinIO：S3 兼容对象存储
+  # 用途：Milvus 的底层存储引擎（存储向量索引、原始数据等）
+  # ============================================================
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z  # 固定版本确保稳定性
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}      # 管理员用户名
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}  # 管理员密码
+    volumes:
+      - minio_data:/minio_data            # 持久化对象数据
+    command: minio server /minio_data --console-address ":9001"  # 同时启动 API(9000) 和 Web 控制台(9001)
+    ports:
+      - "9000:9000"                       # S3 API 端口
+      - "9001:9001"                       # Web 控制台端口
+    healthcheck:
+      # MinIO 健康检查端点：/minio/health/live
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ============================================================
+  # Milvus 2.5：向量数据库（核心组件）
+  # 用途：存储文档 chunk 的向量，执行 ANN（近似最近邻）检索
+  # 架构：Standalone 模式（单节点），依赖 etcd + MinIO
+  # 
+  # 面试点：Milvus 架构分层
+  # - 接入层（Proxy）：接收客户端请求
+  # - 协调层（Coordinator）：管理 DDL/DML 操作
+  # - 工作节点（Worker Node）：执行查询和数据操作
+  # - 元数据存储（etcd）：存储 schema、索引元信息
+  # - 对象存储（MinIO/S3）：存储向量索引文件、binlog 等
+  # Standalone 模式下所有组件在单进程内运行
+  # ============================================================
+  milvus:
+    image: milvusdb/milvus:v2.5.12
+    command: ["milvus", "run", "standalone"]  # 单机模式（非分布式集群）
+    security_opt:
+      - seccomp:unconfined               # 放宽容器安全限制（Milvus 需要某些系统调用）
+    environment:
+      ETCD_ENDPOINTS: etcd:2379           # etcd 地址（Docker 内部 DNS 解析）
+      MINIO_ADDRESS: minio:9000           # MinIO 地址
+      MINIO_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}       # 与 MinIO 配置一致
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - milvus_data:/var/lib/milvus       # 持久化 Milvus 数据
+    ports:
+      - "19530:19530"                     # gRPC 端口（SDK 连接用）
+      - "9091:9091"                       # 健康检查/metrics 端口
+    depends_on:
+      etcd:
+        condition: service_healthy         # 等待 etcd 健康后才启动
+      minio:
+        condition: service_healthy         # 等待 MinIO 健康后才启动
+    healthcheck:
+      # Milvus 健康检查端点：/healthz
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 30                         # 最多等 5 分钟（Milvus 启动较慢）
+
+  # ============================================================
+  # OpenSearch 2.17：全文检索引擎
+  # 用途：稀疏向量检索（BM25），作为混合检索的关键词匹配通道
+  # 
+  # 面试点：为什么 RAG 系统需要 OpenSearch？
+  # - 向量检索擅长语义匹配，但关键词精确匹配能力弱
+  # - BM25 算法擅长精确术语匹配（如产品编号、专业术语）
+  # - 混合检索 = 稠密向量检索 + 稀疏关键词检索，互补提升召回率
+  # - OpenSearch 是 Elasticsearch 7.x 的开源分支，API 兼容
+  # ============================================================
+  opensearch:
+    image: opensearchproject/opensearch:2.17.1
+    environment:
+      discovery.type: single-node         # 单节点模式（开发环境）
+      DISABLE_SECURITY_PLUGIN: "true"     # 禁用安全插件（开发环境不需要 TLS/认证）
+      DISABLE_INSTALL_DEMO_CONFIG: "true" # 不安装演示配置
+      OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g  # JVM 堆内存 1GB
+    ulimits:
+      memlock:                            # 锁定内存限制（防止 JVM 堆被 swap 到磁盘）
+        soft: -1                          # -1 = 无限制
+        hard: -1
+      nofile:                             # 打开文件数限制（OpenSearch 需要大量文件描述符）
+        soft: 65536
+        hard: 65536
+    ports:
+      - "9200:9200"                       # REST API 端口
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data  # 持久化索引数据
+    healthcheck:
+      # 检查集群健康状态：/_cluster/health
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30                         # OpenSearch 启动也较慢
+
+  # ============================================================
+  # FastAPI 应用服务（API）
+  # 用途：RAG 知识库系统的核心后端服务
+  # 
+  # 面试点：启动流程设计
+  # 1. alembic upgrade head → 先执行数据库迁移
+  # 2. uvicorn app.main:app → 再启动 Web 服务
+  # 这样设计确保数据库 schema 始终与应用代码匹配
+  # ============================================================
+  api:
+    build:
+      context: .                          # 构建上下文为项目根目录（使用 Dockerfile）
+    command: >-
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 18080"
+    # YAML 锚点（&app_environment）：定义环境变量块，供 celery-worker 复用
+    environment: &app_environment
+      # ---- 应用基础配置 ----
+      APP_ENV: ${APP_ENV:-local}           # 运行环境：local/development/production
+      APP_HOST: 0.0.0.0                    # 监听所有网络接口
+      APP_PORT: "18080"                    # 应用端口（注意是字符串类型）
+      APP_API_KEY: ${APP_API_KEY:-integration-api-key}        # 外部 API 认证密钥
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-integration-internal-token}  # 内部服务间认证令牌
+
+      # ---- 数据库配置 ----
+      # psycopg 驱动 + postgres 服务名（Docker DNS 解析）
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-rag_app}:${POSTGRES_PASSWORD:-rag_dev_password}@postgres:5432/${POSTGRES_DB:-oa_rag}
+
+      # ---- Redis 配置 ----
+      REDIS_URL: redis://redis:6379/0     # 数据库编号 0（Celery broker 也用此 DB）
+
+      # ---- 向量存储配置（Milvus） ----
+      VECTOR_STORE_PROVIDER: milvus        # 向量存储提供商
+      MILVUS_URI: http://milvus:19530     # Milvus gRPC 地址
+      MILVUS_TOKEN: ${MILVUS_TOKEN:-}     # Milvus 认证 Token（空表示无认证）
+      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-oa_rag_chunks}  # Collection 名称
+
+      # ---- 稀疏索引配置（OpenSearch） ----
+      SPARSE_INDEX_PROVIDER: opensearch    # 稀疏向量索引提供商
+      OPENSEARCH_URL: http://opensearch:9200  # OpenSearch REST API 地址
+      OPENSEARCH_INDEX: ${OPENSEARCH_INDEX:-oa_rag_sparse_chunks}  # 索引名称
+
+      # ---- 评测系统配置 ----
+      EVALUATION_EXECUTION_MODE: celery    # 评测任务使用 Celery 异步执行
+      CELERY_BROKER_URL: redis://redis:6379/0      # Celery 消息代理
+      CELERY_RESULT_BACKEND: redis://redis:6379/1   # Celery 结果后端（DB 1，与 broker 隔离）
+
+      # ---- 文档摄入配置 ----
+      INGESTION_MODE: sync                 # 同步摄入模式（集成环境简化处理）
+
+      # ---- 健康检查配置 ----
+      HEALTH_PROBE_EXTERNAL_SERVICES: "true"  # 健康检查时探测外部服务连通性
+
+      # ---- 降级策略配置 ----
+      ALLOW_PROVIDER_FALLBACKS: "false"    # 禁止 provider 降级（集成测试需严格验证）
+      EMBEDDING_ALLOW_HASH_FALLBACK: "false"  # 禁止哈希降级（无语义能力，不适用于集成测试）
+
+      # ---- Embedding 配置（必须通过 .env.integration 文件提供） ----
+      # ${VAR:?message}：变量未设置时抛出错误并显示 message
+      EMBEDDING_API_BASE: ${EMBEDDING_API_BASE:?Set EMBEDDING_API_BASE in .env.integration}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:?Set EMBEDDING_API_KEY in .env.integration}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:?Set EMBEDDING_MODEL in .env.integration}
+      EMBEDDING_VECTOR_SIZE: ${EMBEDDING_VECTOR_SIZE:-1024}  # 向量维度，默认 1024
+
+      # ---- LLM 配置（必须通过 .env.integration 文件提供） ----
+      LLM_API_BASE: ${LLM_API_BASE:?Set LLM_API_BASE in .env.integration}
+      LLM_API_KEY: ${LLM_API_KEY:?Set LLM_API_KEY in .env.integration}
+      LLM_MODEL: ${LLM_MODEL:?Set LLM_MODEL in .env.integration}
+      LLM_TEMPERATURE: "0.1"              # 低温度，生成结果更确定（适合 RAG 场景）
+
+      # ---- QA Agent 配置 ----
+      AGENT_QUERY_REWRITE_MODE: auto       # 查询改写模式：auto（自动选择策略）
+      AGENT_QUERY_REWRITE_MAX_TOKENS: "96" # 改写查询的最大 token 数
+
+      # ---- 证据阈值配置 ----
+      EVIDENCE_THRESHOLD_DENSE: "0.35"     # 稠密检索相似度阈值（低于此值视为不相关）
+      EVIDENCE_THRESHOLD_HYBRID: "0.55"    # 混合检索相似度阈值
+
+      # ---- 文件存储配置 ----
+      STORAGE_ROOT: /app/data              # 存储根目录
+      RAW_DATA_DIR: /app/data/raw          # 原始文档目录
+      PROCESSED_DATA_DIR: /app/data/processed  # 处理后数据目录
+      SAMPLE_DATA_DIR: /app/data/samples   # 示例数据目录
+    ports:
+      - "18080:18080"                     # 映射 FastAPI 端口
+    volumes:
+      - app_data:/app/data                # 持久化应用数据（上传的文档等）
+    depends_on:
+      postgres:
+        condition: service_healthy         # 等待 PostgreSQL 就绪
+      redis:
+        condition: service_healthy         # 等待 Redis 就绪
+      milvus:
+        condition: service_healthy         # 等待 Milvus 就绪
+      opensearch:
+        condition: service_healthy         # 等待 OpenSearch 就绪
+    healthcheck:
+      # 调用应用自身健康检查接口 /api/v1/health
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:18080/api/v1/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ============================================================
+  # Celery Worker：异步任务执行器
+  # 用途：后台执行评测任务（evaluation run），避免阻塞 API 请求
+  # 
+  # 面试点：Celery 在 RAG 评测中的作用
+  # - 评测任务耗时较长（需要逐个查询检索 + 计算指标）
+  # - 异步执行避免 HTTP 请求超时
+  # - 通过 Redis 作为 broker 实现任务分发
+  # - 结果通过 result_backend（Redis DB 1）回传
+  # ============================================================
+  celery-worker:
+    build:
+      context: .                          # 与 API 服务使用相同的 Dockerfile
+    command: python -m celery -A app.tasks.evaluation_tasks.celery_app worker --loglevel=INFO
+    # YAML 锚点引用（*app_environment）：复用 API 服务的所有环境变量
+    environment: *app_environment
+    volumes:
+      - app_data:/app/data                # 共享数据卷（与 API 服务读写同一目录）
+    depends_on:
+      api:
+        condition: service_healthy         # 等待 API 服务健康后才启动
+    restart: unless-stopped               # 除非手动停止，否则异常退出后自动重启
+
+# ============================================================
+# 命名卷（Named Volumes）
+# Docker 管理的持久化存储，独立于容器生命周期
+# 
+# 面试点：为什么用命名卷而非 bind mount？
+# - 命名卷由 Docker 管理，位置统一，权限自动处理
+# - 跨平台兼容（Windows/Mac/Linux）
+# - 备份/迁移方便（docker volume backup）
+# - bind mount 依赖宿主机绝对路径，可移植性差
+# ============================================================
+volumes:
+  postgres_data:     # PostgreSQL 数据卷
+  redis_data:        # Redis AOF/RDB 持久化文件
+  etcd_data:         # etcd 元数据
+  minio_data:        # MinIO 对象数据（Milvus 向量索引）
+  milvus_data:       # Milvus 运行时数据
+  opensearch_data:   # OpenSearch 索引数据
+  app_data:          # 应用数据（上传文档、处理后文件等）

@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rag-api
+  namespace: rag-system
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - rag.example.com
+      secretName: rag-api-tls
+  rules:
+    - host: rag.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rag-api
+                port:
+                  name: http

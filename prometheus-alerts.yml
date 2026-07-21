@@ -1,0 +1,50 @@
+groups:
+  - name: knowledge-base-production
+    rules:
+      - alert: KnowledgeBaseDependencyDown
+        expr: service_health == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Knowledge base dependency {{ $labels.service }} is unavailable"
+
+      - alert: KnowledgeBaseDbPoolExhausted
+        expr: db_pool_available <= 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Knowledge base database pool has no available connections"
+
+      - alert: KnowledgeBaseRetrievalP95High
+        expr: histogram_quantile(0.95, sum by (le, strategy) (rate(retrieval_duration_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Knowledge base retrieval P95 exceeds 2 seconds for {{ $labels.strategy }}"
+
+      - alert: KnowledgeBaseProviderFailureRateHigh
+        expr: sum(rate(llm_requests_total{status="failure"}[5m])) / clamp_min(sum(rate(llm_requests_total[5m])), 1) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Knowledge base LLM failure rate exceeds 5 percent"
+
+      - alert: KnowledgeBaseRateLimitBackendUnavailable
+        expr: increase(rate_limit_backend_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Knowledge base Redis rate limiter backend is unavailable"
+
+      - alert: KnowledgeBaseRateLimitRejectionsHigh
+        expr: sum(rate(rate_limit_rejections_total[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Knowledge base is rejecting more than one request per second"

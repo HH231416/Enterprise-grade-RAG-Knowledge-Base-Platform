@@ -1,0 +1,180 @@
+{
+  "title": "Knowledge Base Core",
+  "uid": "kb-core",
+  "tags": ["rag", "knowledge-base"],
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "title": "HTTP Request Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(http_requests_total[1m])",
+          "legendFormat": "{{method}} {{path}} ({{status}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 2,
+      "title": "HTTP Latency P99",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "{{method}} {{path}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "id": 3,
+      "title": "LLM Request Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(llm_requests_total[1m])",
+          "legendFormat": "{{model}} ({{status}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 4,
+      "title": "LLM Latency P50/P95",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(llm_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P50 {{model}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(llm_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P95 {{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "id": 5,
+      "title": "LLM Token Usage",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(llm_tokens_total[5m])",
+          "legendFormat": "{{model}} {{type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "tokens/s" }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Embedding Request Rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "expr": "rate(embedding_requests_total[1m])",
+          "legendFormat": "{{model}} ({{status}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Retrieval Duration",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 16 },
+      "targets": [
+        {
+          "expr": "rate(retrieval_duration_seconds_sum[1m]) / rate(retrieval_duration_seconds_count[1m])",
+          "legendFormat": "{{strategy}} avg"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "id": 8,
+      "title": "Documents Uploaded",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 16 },
+      "targets": [
+        {
+          "expr": "increase(documents_uploaded_total[1h])",
+          "legendFormat": "{{source_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "colorMode": "value" }
+      }
+    },
+    {
+      "id": 9,
+      "title": "QA Questions (Last 1h)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 16 },
+      "targets": [
+        {
+          "expr": "increase(qa_questions_total[1h])"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Service Health",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 20 },
+      "targets": [
+        {
+          "expr": "service_health",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": 0 },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "Vector Store Operations",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "expr": "rate(vector_store_operations_total[1m])",
+          "legendFormat": "{{provider}} {{operation}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
+    }
+  ]
+}

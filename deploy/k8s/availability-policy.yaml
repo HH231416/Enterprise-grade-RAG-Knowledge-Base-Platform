@@ -1,0 +1,21 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rag-api
+  namespace: rag-system
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rag-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rag-evaluation-worker
+  namespace: rag-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rag-evaluation-worker

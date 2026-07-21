@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-system-config
+  namespace: rag-system
+data:
+  APP_ENV: production
+  APP_HOST: 0.0.0.0
+  APP_PORT: "18080"
+  LOG_LEVEL: INFO
+  STORAGE_ROOT: /data
+  VECTOR_STORE_PROVIDER: milvus
+  MILVUS_URI: http://milvus-ha.platform.svc:19530
+  SPARSE_INDEX_PROVIDER: opensearch
+  OPENSEARCH_URL: https://opensearch-ha.platform.svc:9200
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_REQUESTS: "120"
+  RATE_LIMIT_WINDOW_SECONDS: "60"
+  RATE_LIMIT_FAIL_OPEN: "false"
+  HEALTH_PROBE_EXTERNAL_SERVICES: "false"
+  METRICS_AUTH_ENABLED: "true"
+  ALLOW_PROVIDER_FALLBACKS: "false"
+  PERMISSION_MODE: plugin
+  PERMISSION_PLUGIN: your_company.permissions.EnterprisePermissionChecker
+  RETRIEVAL_AUTHENTICATED_IDENTITY_REQUIRED: "true"
+  EVALUATION_EXECUTION_MODE: celery
+  ANSWER_JUDGE_ENABLED: "true"
+  ANSWER_JUDGE_MAX_TOKENS: "320"
+  ANSWER_JUDGE_MIN_FAITHFULNESS: "0.80"
+  ANSWER_JUDGE_MIN_RELEVANCE: "0.75"

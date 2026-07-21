@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-evaluation-worker
+  namespace: rag-system
+  labels:
+    app.kubernetes.io/name: rag-evaluation-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rag-evaluation-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rag-evaluation-worker
+    spec:
+      terminationGracePeriodSeconds: 90
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: rag-evaluation-worker
+      containers:
+        - name: worker
+          image: registry.example.com/rag-system:replace-with-version
+          command: ["celery", "-A", "app.tasks.evaluation_tasks.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+          envFrom:
+            - configMapRef:
+                name: rag-system-config
+            - secretRef:
+                name: rag-system-secrets
+          volumeMounts:
+            - name: shared-storage
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: shared-storage
+          persistentVolumeClaim:
+            claimName: rag-shared-storage

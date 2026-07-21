@@ -1,0 +1,27 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rag-db-migration
+  namespace: rag-system
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: registry.example.com/rag-system:replace-with-version
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: rag-system-config
+            - secretRef:
+                name: rag-system-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
