@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     app_host: str = "127.0.0.1"
     app_port: int = 18080
     app_api_prefix: str = "/api/v1"
+    scenario_profile: str = "campus"
     log_level: str = "INFO"
     max_upload_size_mb: int = 50
     app_api_key: str = "change-me"
@@ -33,6 +34,11 @@ class Settings(BaseSettings):
     health_probe_external_services: bool = False
     metrics_auth_enabled: bool = False
     allow_provider_fallbacks: bool = True
+    # Model serving is deliberately separated from the RAG API process.
+    # Production uses internal OpenAI-compatible vLLM and TEI gateways.
+    model_serving_mode: str = "local"
+    llm_provider: str = "auto"
+    embedding_provider: str = "auto"
     rate_limit_enabled: bool = False
     rate_limit_requests: int = 120
     rate_limit_window_seconds: int = 60
@@ -40,6 +46,8 @@ class Settings(BaseSettings):
     rate_limit_fail_open: bool = False
     rate_limit_trust_x_forwarded_for: bool = False
     ingestion_mode: str = "sync"
+    failed_upload_retention_hours: int = 72
+    failed_upload_cleanup_batch_size: int = 200
     evaluation_execution_mode: str = "sync"
     celery_broker_url: str | None = None
     celery_result_backend: str | None = None
@@ -60,6 +68,7 @@ class Settings(BaseSettings):
     trusted_identity_external_source_headers: str = "X-Identity-Source,X-Auth-Issuer"
     trusted_identity_external_id_headers: str = "X-Identity-External-Id,X-Auth-Subject"
     evaluation_retrieval_user_id: str = "evaluation-service"
+    campus_admin_roles: str = "campus_admin,school_admin"
 
     database_url: str | None = None
     postgres_host: str | None = None
@@ -190,6 +199,8 @@ class Settings(BaseSettings):
     answer_judge_min_relevance: float = 0.75
     agent_query_rewrite_mode: str = "auto"
     agent_query_rewrite_max_tokens: int = 96
+    retrieval_strategy: str = "hybrid"
+    hybrid_fusion_alpha: float = 0.7
     evidence_threshold_dense: float = 0.35
     evidence_threshold_hybrid: float = 0.55
 
@@ -215,6 +226,7 @@ class Settings(BaseSettings):
     wecom_base_url: str = "https://qyapi.weixin.qq.com"
 
     rerank_enabled: bool = False
+    rerank_provider: str = "tei"
     rerank_api_base: str | None = Field(
         default=None,
         validation_alias=AliasChoices("RERANK_API_BASE", "rerank_api_base"),
@@ -261,10 +273,47 @@ class Settings(BaseSettings):
         default=5,
         validation_alias=AliasChoices("IMAGE_RECOGNITION_BATCH_SIZE", "image_recognition_batch_size"),
     )
+    paddle_ocr_api_base: str | None = Field(
+        default="http://127.0.0.1:8080/v1/ocr",
+        validation_alias=AliasChoices("PADDLE_OCR_API_BASE", "paddle_ocr_api_base"),
+    )
+    image_vlm_confidence_threshold: float = Field(
+        default=0.85,
+        validation_alias=AliasChoices(
+            "IMAGE_VLM_CONFIDENCE_THRESHOLD",
+            "image_vlm_confidence_threshold",
+        ),
+    )
+    image_cache_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("IMAGE_CACHE_ENABLED", "image_cache_enabled"),
+    )
 
     @model_validator(mode="after")
     def validate_required_config(self) -> "Settings":
         self.app_env = self._normalize_text(self.app_env, default="local") or "local"
+        self.scenario_profile = self._normalize_text(self.scenario_profile, default="campus") or "campus"
+        if self.scenario_profile not in {"campus", "enterprise", "generic"}:
+            raise ValueError("SCENARIO_PROFILE must be campus, enterprise, or generic.")
+        self.model_serving_mode = (
+            self._normalize_text(self.model_serving_mode, default="local") or "local"
+        ).lower()
+        if self.model_serving_mode not in {"local", "internal_gateway", "external_api"}:
+            raise ValueError("MODEL_SERVING_MODE must be local, internal_gateway, or external_api.")
+        self.llm_provider = (self._normalize_text(self.llm_provider, default="auto") or "auto").lower()
+        if self.llm_provider not in {"auto", "vllm", "ollama", "openai_compatible"}:
+            raise ValueError("LLM_PROVIDER must be auto, vllm, ollama, or openai_compatible.")
+        self.embedding_provider = (
+            self._normalize_text(self.embedding_provider, default="auto") or "auto"
+        ).lower()
+        if self.embedding_provider not in {"auto", "tei", "openai_compatible", "local"}:
+            raise ValueError(
+                "EMBEDDING_PROVIDER must be auto, tei, openai_compatible, or local."
+            )
+        self.campus_admin_roles = self._normalize_text(
+            self.campus_admin_roles,
+            default="campus_admin,school_admin",
+        ) or "campus_admin,school_admin"
         self.zilliz_collection = self._normalize_text(
             self.zilliz_collection,
             default="oa_rag_chunks",
@@ -284,6 +333,16 @@ class Settings(BaseSettings):
         self.zilliz_token = self._normalize_text(self.zilliz_token)
         self.milvus_uri = self._normalize_text(self.milvus_uri)
         self.milvus_token = self._normalize_text(self.milvus_token)
+
+        if self.app_env != "local" and self.model_serving_mode == "internal_gateway":
+            if self.llm_provider != "vllm" or self.embedding_provider != "tei":
+                raise ValueError(
+                    "internal_gateway production requires LLM_PROVIDER=vllm and EMBEDDING_PROVIDER=tei."
+                )
+            if not (self.llm_api_base and self.embedding_api_base):
+                raise ValueError(
+                    "internal_gateway production requires LLM_API_BASE and EMBEDDING_API_BASE."
+                )
 
         if not self.database_url:
             missing = [
@@ -311,6 +370,11 @@ class Settings(BaseSettings):
 
         if self.provider_retry_count < 0:
             raise ValueError("PROVIDER_RETRY_COUNT must be greater than or equal to 0.")
+
+        if self.failed_upload_retention_hours < 0:
+            raise ValueError("FAILED_UPLOAD_RETENTION_HOURS must be greater than or equal to 0.")
+        if self.failed_upload_cleanup_batch_size <= 0:
+            raise ValueError("FAILED_UPLOAD_CLEANUP_BATCH_SIZE must be greater than 0.")
 
         if self.rate_limit_requests <= 0:
             raise ValueError("RATE_LIMIT_REQUESTS must be greater than 0.")
@@ -376,6 +440,17 @@ class Settings(BaseSettings):
         self.rerank_api_base = self._normalize_text(self.rerank_api_base)
         self.rerank_api_key = self._normalize_text(self.rerank_api_key)
         self.rerank_model = self._normalize_text(self.rerank_model)
+        self.rerank_provider = (
+            self._normalize_text(self.rerank_provider, default="tei") or "tei"
+        ).lower()
+        if self.rerank_provider not in {"tei", "openai_compatible"}:
+            raise ValueError("RERANK_PROVIDER must be tei or openai_compatible.")
+        if self.rerank_enabled and not self.rerank_api_base:
+            raise ValueError("RERANK_API_BASE is required when RERANK_ENABLED=true.")
+        if self.rerank_enabled and not self.rerank_model:
+            raise ValueError("RERANK_MODEL is required when RERANK_ENABLED=true.")
+        if self.app_env != "local" and self.rerank_enabled and not self.rerank_api_key:
+            raise ValueError("RERANK_API_KEY is required in non-local environments when RERANK_ENABLED=true.")
         self.agent_query_rewrite_mode = self._normalize_text(
             self.agent_query_rewrite_mode,
             default="auto",
@@ -384,9 +459,15 @@ class Settings(BaseSettings):
             raise ValueError("AGENT_QUERY_REWRITE_MODE must be auto, llm, or heuristic.")
         if self.agent_query_rewrite_max_tokens <= 0:
             raise ValueError("AGENT_QUERY_REWRITE_MAX_TOKENS must be greater than 0.")
+        self.retrieval_strategy = (
+            self._normalize_text(self.retrieval_strategy, default="hybrid") or "hybrid"
+        ).lower()
+        if self.retrieval_strategy != "hybrid":
+            raise ValueError("RETRIEVAL_STRATEGY must be hybrid in the production retrieval pipeline.")
         if self.answer_judge_max_tokens <= 0:
             raise ValueError("ANSWER_JUDGE_MAX_TOKENS must be greater than 0.")
         for name, value in (
+            ("HYBRID_FUSION_ALPHA", self.hybrid_fusion_alpha),
             ("EVIDENCE_THRESHOLD_DENSE", self.evidence_threshold_dense),
             ("EVIDENCE_THRESHOLD_HYBRID", self.evidence_threshold_hybrid),
             ("ANSWER_JUDGE_MIN_FAITHFULNESS", self.answer_judge_min_faithfulness),
@@ -457,12 +538,15 @@ class Settings(BaseSettings):
         self.multimodal_api_base = self._normalize_text(self.multimodal_api_base)
         self.multimodal_api_key = self._normalize_text(self.multimodal_api_key)
         self.multimodal_model = self._normalize_text(self.multimodal_model)
+        self.paddle_ocr_api_base = self._normalize_text(self.paddle_ocr_api_base)
         
         # 验证超时和批量大小
         if self.image_recognition_timeout <= 0:
             raise ValueError("IMAGE_RECOGNITION_TIMEOUT must be greater than 0.")
         if self.image_recognition_batch_size <= 0:
             raise ValueError("IMAGE_RECOGNITION_BATCH_SIZE must be greater than 0.")
+        if not 0.0 <= self.image_vlm_confidence_threshold <= 1.0:
+            raise ValueError("IMAGE_VLM_CONFIDENCE_THRESHOLD must be between 0 and 1.")
 
         return self
 
@@ -533,7 +617,7 @@ class Settings(BaseSettings):
             ),
             "llm_provider": bool(self.llm_api_base and self.llm_api_key and self.llm_model),
             "image_recognition": bool(
-                (self.image_recognition_provider == "paddle_ocr" and self.paddle_ocr_token)
+                (self.image_recognition_provider == "paddle_ocr" and self.paddle_ocr_api_base and self.paddle_ocr_token)
                 or (self.image_recognition_provider == "multimodal" and self.multimodal_api_base and self.multimodal_api_key and self.multimodal_model)
             ),
         }

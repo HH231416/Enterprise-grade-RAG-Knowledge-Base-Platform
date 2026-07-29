@@ -13,6 +13,7 @@ from app.db.session import get_db_session
 from app.models.auth_session import AuthSession
 from app.repositories.identity import IdentityRepository
 from app.schemas.retrieval import UserContext
+from app.services.identity import IdentityService
 
 
 def get_settings_dep() -> Settings:
@@ -34,9 +35,12 @@ def get_trusted_user_context(
 ) -> UserContext | None:
     session_user_id = _read_user_id_from_session_token(request=request, settings=settings, session=session)
     if session_user_id is not None:
-        return UserContext(user_id=session_user_id, is_session_identity=True)
+        return IdentityService(session).resolve_user_context(
+            UserContext(user_id=session_user_id, is_session_identity=True)
+        )
 
-    return get_trusted_header_user_context(request=request, settings=settings, session=session)
+    context = get_trusted_header_user_context(request=request, settings=settings, session=session)
+    return IdentityService(session).resolve_user_context(context) if context is not None else None
 
 
 def get_trusted_header_user_context(

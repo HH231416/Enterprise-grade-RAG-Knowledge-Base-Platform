@@ -43,6 +43,7 @@ def agent_answer(
     # 调用 QA Agent 服务执行有限状态机问答流程
     data = QaAgentService(session).answer(
         request,
+        trusted_user_context=trusted_user_context is not None,
         authenticated_identity_required=settings.retrieval_authenticated_identity_required,  # 是否要求认证身份
     )
     return success_response(data.model_dump(mode="json"), trace_id)

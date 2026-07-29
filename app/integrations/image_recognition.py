@@ -118,13 +118,13 @@ class PaddleOCRProvider(ImageRecognitionProvider):
     
     def __init__(self, settings: Settings) -> None:
         super().__init__(settings)
-        self.api_base = "https://paddleocr.aistudio-app.com/api/v2/ocr"
+        self.api_base = settings.paddle_ocr_api_base
         self.token = settings.paddle_ocr_token
         self.model = "PaddleOCR-VL-1.5"
-        self.timeout = 30.0
+        self.timeout = settings.image_recognition_timeout
     
     def is_configured(self) -> bool:
-        return bool(self.token)
+        return bool(self.api_base and self.token)
     
     async def recognize_image(
         self, 
@@ -150,7 +150,16 @@ class PaddleOCRProvider(ImageRecognitionProvider):
                 filename = path.name
             else:
                 file_content = image_data
-                filename = "image.jpg"
+                mime_type = str(kwargs.get("mime_type") or "image/jpeg").lower()
+                extension = {
+                    "image/jpeg": "jpg",
+                    "image/png": "png",
+                    "image/gif": "gif",
+                    "image/bmp": "bmp",
+                    "image/tiff": "tiff",
+                    "image/webp": "webp",
+                }.get(mime_type, "jpg")
+                filename = f"image.{extension}"
             
             # 提交OCR任务
             job_id = await self._submit_ocr_job(file_content, filename)
@@ -259,10 +268,17 @@ class PaddleOCRProvider(ImageRecognitionProvider):
         
         max_retries = 3
         retry_count = 0
+        deadline = asyncio.get_running_loop().time() + self.timeout
         
         async with httpx.AsyncClient(timeout=self.timeout, proxy=None) as client:
             while True:
                 try:
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise AppError(
+                            code=ErrorCode.IMAGE_RECOGNITION_FAILED,
+                            message=f"PaddleOCR job timed out after {self.timeout}s",
+                            status_code=504,
+                        )
                     response = await client.get(
                         f"{self.api_base}/jobs/{job_id}",
                         headers=headers,
@@ -292,12 +308,14 @@ class PaddleOCRProvider(ImageRecognitionProvider):
                         # 解析结果
                         lines = result_response.text.strip().split('\n')
                         all_text = []
+                        chart_detected = False
                         for line in lines:
                             if not line.strip():
                                 continue
                             line_data = json.loads(line.strip())
                             result = line_data["result"]
                             for layout_result in result.get("layoutParsingResults", []):
+                                chart_detected = chart_detected or self._layout_contains_chart(layout_result)
                                 markdown_text = layout_result.get("markdown", {}).get("text", "")
                                 if markdown_text:
                                     # 提取纯文本（去除HTML标签）
@@ -314,6 +332,7 @@ class PaddleOCRProvider(ImageRecognitionProvider):
                             "text": "\n\n".join(all_text),
                             "confidence": 1.0,
                             "raw_data": data,
+                            "chart_detected": chart_detected,
                         }
                     
                     elif state == "failed":
@@ -337,6 +356,24 @@ class PaddleOCRProvider(ImageRecognitionProvider):
                         )
                     logger.warning("PaddleOCR request error (attempt %d/%d): %s", retry_count, max_retries, e)
                     await asyncio.sleep(2 * retry_count)
+
+    @classmethod
+    def _layout_contains_chart(cls, value: Any) -> bool:
+        """Read chart labels emitted by different PaddleOCR adapter versions."""
+        markers = ("chart", "graph", "diagram", "flowchart", "流程图", "架构图", "图表")
+        if isinstance(value, dict):
+            for key, item in value.items():
+                normalized_key = str(key).lower()
+                if any(marker in normalized_key for marker in markers) and item not in (None, False, "", [], {}):
+                    return True
+                if cls._layout_contains_chart(item):
+                    return True
+        elif isinstance(value, (list, tuple)):
+            return any(cls._layout_contains_chart(item) for item in value)
+        elif isinstance(value, str):
+            normalized_value = value.lower()
+            return any(marker in normalized_value for marker in markers)
+        return False
 
 
 class MultimodalProvider(ImageRecognitionProvider):
@@ -377,7 +414,7 @@ class MultimodalProvider(ImageRecognitionProvider):
                 mime_type = self._get_mime_type(path.suffix)
             else:
                 image_content = image_data
-                mime_type = "image/jpeg"
+                mime_type = kwargs.get("mime_type", "image/jpeg")
             
             # 编码图片为base64
             image_base64 = base64.b64encode(image_content).decode("utf-8")

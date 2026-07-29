@@ -18,7 +18,7 @@ class DocumentRepository:
             Document.file_hash == file_hash,
             Document.version == version,
             Document.deleted_at.is_(None),
-            Document.status != "failed",
+            Document.status.not_in(("failed", "failed_expired")),
         )
         return self.session.scalar(stmt)
 
@@ -94,6 +94,7 @@ class DocumentRepository:
         version: str | None = None,
         access_level: str | None = None,
         owner_dept: str | None = None,
+        owner_role: str | None = None,
         tags: list | None = None,
         extra_meta: dict | None = None,
     ) -> None:
@@ -110,6 +111,8 @@ class DocumentRepository:
             values["access_level"] = access_level
         if owner_dept is not None:
             values["owner_dept"] = owner_dept
+        if owner_role is not None:
+            values["owner_role"] = owner_role
         if tags is not None:
             values["tags"] = tags
         if extra_meta is not None:

@@ -49,7 +49,7 @@ def test_agent_answer_endpoint_returns_trace(client, sample_pdf_bytes):
         json={
             "question": "What is the approval flow for transfer requests?",
             "top_k": 5,
-            "retrieval_strategy": "dense",
+            "retrieval_strategy": "hybrid",
             "filters": {"source_module": ["hr"]},  # 限定 HR 模块
             "user_context": {"user_id": "u1001"},  # 用户上下文
         },
@@ -123,7 +123,7 @@ def test_agent_service_rewrites_once_when_first_retrieval_is_weak(db_session, mo
             question="What is the approval flow for transfer requests?",
             top_k=5,
             max_retrieval_rounds=2,  # 最多 2 轮
-            retrieval_strategy="dense",
+            retrieval_strategy="hybrid",
         )
     )
 

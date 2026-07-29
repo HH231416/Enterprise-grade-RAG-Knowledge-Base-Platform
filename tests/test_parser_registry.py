@@ -28,6 +28,7 @@ def test_default_registry_contains_all_upload_extensions():
         "md",
         "pdf",
         "png",
+        "pptx",
         "text",
         "tif",
         "tiff",

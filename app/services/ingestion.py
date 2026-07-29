@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import timedelta
 from datetime import UTC, datetime  # UTC 统一时区，datetime 记录任务时间
 from pathlib import Path
 
@@ -142,6 +143,7 @@ class IngestionService:
             document.status = "active"
             document.parse_status = "success"
             document.index_status = "pending"
+            self._clear_failed_file_retention(document)
             self.session.commit()
             if self.settings is not None:
                 indexed_count = IndexingService(self.settings, self.session).index_document_with_cleanup(
@@ -186,6 +188,7 @@ class IngestionService:
                 message="document not found",
                 status_code=404,
             )
+        self._require_retryable_source_file(document)
 
         job = IngestionJob(
             doc_uuid=document.doc_uuid,
@@ -219,6 +222,7 @@ class IngestionService:
                 message="job not found",
                 status_code=404,
             )
+        self._require_retryable_source_file(document)
         stale_chunk_ids = self.chunks.list_chunk_ids_for_document(document.doc_uuid) if job.job_type == "reindex" else []
         return self.process_upload_with_cleanup(
             document=document,
@@ -239,15 +243,18 @@ class IngestionService:
         if document is None or job is None:
             return
         
-        # 删除已上传的文件
-        if document.file_path:
-            try:
-                file_path = Path(document.file_path)
-                if file_path.exists():
-                    file_path.unlink()
-                    logger.info("Deleted failed upload file: %s", file_path)
-            except Exception as e:
-                logger.warning("Failed to delete upload file: %s", e)
+        # Keep the source file through the retry window; scheduled cleanup removes it later.
+        retention_hours = (
+            self.settings.failed_upload_retention_hours
+            if self.settings is not None
+            else 72
+        )
+        retention_until = datetime.now(UTC) + timedelta(hours=retention_hours)
+        document.extra_meta = {
+            **(document.extra_meta or {}),
+            "failed_file_retention_until": retention_until.isoformat(),
+            "failed_file_retention_hours": retention_hours,
+        }
         
         document.status = "failed"
         document.parse_status = "failed"
@@ -257,6 +264,24 @@ class IngestionService:
         job.error_message = error_message
         job.finished_at = datetime.now(UTC)
         self.session.commit()
+
+    @staticmethod
+    def _clear_failed_file_retention(document: Document) -> None:
+        document.extra_meta = {
+            key: value
+            for key, value in (document.extra_meta or {}).items()
+            if not key.startswith("failed_file_")
+        }
+
+    @staticmethod
+    def _require_retryable_source_file(document: Document) -> None:
+        if document.file_path and Path(document.file_path).is_file():
+            return
+        raise AppError(
+            code=ErrorCode.DOCUMENT_PARSE_FAILED,
+            message="source file is unavailable because its failed-upload retention window has expired",
+            status_code=422,
+        )
 
     @staticmethod
     def _get_chunking_strategy(document: Document) -> str:

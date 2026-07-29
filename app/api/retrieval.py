@@ -20,12 +20,6 @@ router = APIRouter(prefix="/retrieval", tags=["retrieval"])
 
 STRATEGIES = [
     StrategyInfo(
-        name="dense",
-        label="稠密检索",
-        description="仅使用向量语义检索（默认）",
-        requires=["embedding"],
-    ),
-    StrategyInfo(
         name="hybrid",
         label="混合检索",
         description="向量语义检索 + BM25 关键词检索，min‑max 归一化后加权融合",
@@ -60,6 +54,7 @@ def search(
         request = request.model_copy(update={"user_context": trusted_user_context})
     data = RetrievalService(session).search(
         request,
+        trusted_user_context=trusted_user_context is not None,
         authenticated_identity_required=settings.retrieval_authenticated_identity_required,
     )
     return success_response(data.model_dump(mode="json"), trace_id)
@@ -77,6 +72,7 @@ def debug_search(
         request = request.model_copy(update={"user_context": trusted_user_context})
     data = RetrievalService(session).debug_search(
         request,
+        trusted_user_context=trusted_user_context is not None,
         authenticated_identity_required=settings.retrieval_authenticated_identity_required,
     )
     return success_response(data.model_dump(mode="json"), trace_id)

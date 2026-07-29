@@ -93,6 +93,7 @@ class DocumentManagementService:
             index_status=document.index_status,
             access_level=document.access_level,
             owner_dept=document.owner_dept,
+            owner_role=document.owner_role,
             created_at=document.created_at,
             updated_at=document.updated_at,
             file_ext=document.file_ext,
@@ -138,6 +139,7 @@ class DocumentManagementService:
             version=request.version,
             access_level=request.access_level,
             owner_dept=request.owner_dept,
+            owner_role=request.owner_role,
             tags=request.tags,
             extra_meta=request.extra_meta,
         )

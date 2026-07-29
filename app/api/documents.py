@@ -160,6 +160,7 @@ async def upload_document(  # async：文件上传涉及 I/O，避免阻塞事�
     version: str = Form(default="v1"),        # 文档版本号，默认 v1
     access_level: str = Form(default="internal"),  # 访问级别，默认 internal（内部）
     owner_dept: str | None = Form(default=None),   # 所属部门，可选
+    owner_role: str | None = Form(default=None),   # 所属角色，可选
     tags: str | None = Form(default=None),         # 标签（逗号分隔字符串），可选
     extra_meta: str | None = Form(default=None),   # 额外 JSON 元数据，可选，用于扩展自定义字段
     trace_id: str = Depends(get_trace_id),         # 依赖注入：链路追踪 ID
@@ -175,6 +176,7 @@ async def upload_document(  # async：文件上传涉及 I/O，避免阻塞事�
         version=version,
         access_level=access_level,
         owner_dept=owner_dept,
+        owner_role=owner_role,
         tags=tags,
         extra_meta=extra_meta,
     )

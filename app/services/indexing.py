@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from collections import OrderedDict
+import hashlib
 import logging
+import threading
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
@@ -21,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 
 class IndexingService:
+    # Reuse vectors for unchanged extracted images while retaining a separate
+    # vector record and document-level access metadata for every occurrence.
+    _image_embedding_cache: OrderedDict[str, object] = OrderedDict()
+    _image_embedding_cache_lock = threading.Lock()
+    _image_embedding_cache_max_entries = 4096
+
     def __init__(self, settings: Settings, session: Session) -> None:
         self.settings = settings
         self.session = session
@@ -55,7 +64,7 @@ class IndexingService:
             if stale_chunk_ids:
                 self.vector_store.delete_embeddings(chunk_ids=stale_chunk_ids)
 
-            embeddings = self.embedding_provider.embed_texts([chunk.chunk_text for chunk in chunks])
+            embeddings = self._embed_chunks(chunks)
             self._record_embedding_logs(embeddings)
 
             job.current_step = "vector_upsert"
@@ -76,6 +85,7 @@ class IndexingService:
                         "section_title": chunk.section_title,
                         "access_level": document.access_level,
                         "owner_dept": document.owner_dept,
+                        "owner_role": document.owner_role,
                         "created_at": document.created_at.isoformat(),
                         "updated_at": document.updated_at.isoformat(),
                     }
@@ -130,6 +140,88 @@ class IndexingService:
                 )
             )
         self.session.commit()
+
+    def _embed_chunks(self, chunks):
+        """Embed chunks, reusing vectors for identical cached image content."""
+        embeddings = [None] * len(chunks)
+        uncached_indexes: list[int] = []
+        image_groups: dict[str, list[int]] = {}
+
+        for index, chunk in enumerate(chunks):
+            cache_key = self._image_embedding_cache_key(chunk)
+            if cache_key is None:
+                uncached_indexes.append(index)
+                continue
+            cached = self._get_cached_image_embedding(cache_key)
+            if cached is not None:
+                embeddings[index] = cached
+                continue
+            image_groups.setdefault(cache_key, []).append(index)
+
+        requests: list[tuple[str | None, int]] = [(None, index) for index in uncached_indexes]
+        requests.extend((cache_key, indexes[0]) for cache_key, indexes in image_groups.items())
+        if requests:
+            generated = self.embedding_provider.embed_texts(
+                [chunks[index].chunk_text for _, index in requests]
+            )
+            for (cache_key, index), embedding in zip(requests, generated, strict=True):
+                if cache_key is None:
+                    embeddings[index] = embedding
+                    continue
+                self._cache_image_embedding(cache_key, embedding)
+                for grouped_index in image_groups[cache_key]:
+                    embeddings[grouped_index] = self._copy_embedding(embedding)
+
+        if any(embedding is None for embedding in embeddings):
+            raise AppError(
+                code=ErrorCode.EMBEDDING_FAILED,
+                message="embedding cache produced an incomplete result set",
+                status_code=422,
+            )
+        return embeddings
+
+    def _image_embedding_cache_key(self, chunk) -> str | None:
+        image_hash = (chunk.metadata_json or {}).get("image_hash")
+        if not isinstance(image_hash, str) or not image_hash:
+            return None
+        text_hash = hashlib.sha256(chunk.chunk_text.encode("utf-8")).hexdigest()
+        return "|".join(
+            (
+                image_hash,
+                text_hash,
+                self.settings.embedding_api_base or "",
+                self.settings.embedding_model or "",
+                self.settings.embedding_local_model or "",
+                str(self.settings.embedding_vector_size),
+            )
+        )
+
+    @staticmethod
+    def _copy_embedding(embedding):
+        return type(embedding)(
+            text=embedding.text,
+            vector=list(embedding.vector),
+            model_name=embedding.model_name,
+            provider_name=embedding.provider_name,
+            request_tokens=embedding.request_tokens,
+        )
+
+    @classmethod
+    def _get_cached_image_embedding(cls, cache_key: str):
+        with cls._image_embedding_cache_lock:
+            embedding = cls._image_embedding_cache.get(cache_key)
+            if embedding is None:
+                return None
+            cls._image_embedding_cache.move_to_end(cache_key)
+            return cls._copy_embedding(embedding)
+
+    @classmethod
+    def _cache_image_embedding(cls, cache_key: str, embedding) -> None:
+        with cls._image_embedding_cache_lock:
+            cls._image_embedding_cache[cache_key] = cls._copy_embedding(embedding)
+            cls._image_embedding_cache.move_to_end(cache_key)
+            while len(cls._image_embedding_cache) > cls._image_embedding_cache_max_entries:
+                cls._image_embedding_cache.popitem(last=False)
 
     def _mark_failed(
         self,

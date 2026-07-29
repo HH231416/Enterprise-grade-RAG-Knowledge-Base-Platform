@@ -63,6 +63,9 @@ type UploadFormState = {
   title: string
   source_type: string
   source_module: string
+  access_level: string
+  owner_dept: string
+  owner_role: string
   tags: string[]
   chunkingStrategy: string
 }
@@ -129,7 +132,10 @@ const JOB_STEP_LABELS: Record<string, string> = {
 const DEFAULT_UPLOAD_FIELDS: UploadFormState = {
   title: '',
   source_type: 'rule_doc',
-  source_module: 'oa',
+  source_module: 'administration',
+  access_level: 'internal',
+  owner_dept: '',
+  owner_role: '',
   tags: [],
   chunkingStrategy: 'fixed',
 }
@@ -491,6 +497,9 @@ export function DocumentsPage() {
     formData.append('title', uploadFields.title)
     formData.append('source_type', uploadFields.source_type)
     formData.append('source_module', uploadFields.source_module)
+    formData.append('access_level', uploadFields.access_level)
+    if (uploadFields.owner_dept.trim()) formData.append('owner_dept', uploadFields.owner_dept.trim())
+    if (uploadFields.owner_role.trim()) formData.append('owner_role', uploadFields.owner_role.trim())
     formData.append('tags', JSON.stringify(normalizeTags(uploadFields.tags)))
     formData.append('extra_meta', JSON.stringify(buildExtraMeta(uploadFields.chunkingStrategy)))
     try {
@@ -651,6 +660,21 @@ export function DocumentsPage() {
               <select value={uploadFields.source_type} onChange={(e) => setUploadFields((c) => ({ ...c, source_type: e.target.value }))}>
                 {sourceTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
+            </FormField>
+            <FormField label="可见范围" hint="院系和角色范围会在生产环境由校园权限策略校验。">
+              <select value={uploadFields.access_level} onChange={(e) => setUploadFields((c) => ({ ...c, access_level: e.target.value }))}>
+                <option value="public">公开</option>
+                <option value="internal">校内认证用户</option>
+                <option value="department">指定学院/部门</option>
+                <option value="role">指定身份角色</option>
+                <option value="private">仅创建者</option>
+              </select>
+            </FormField>
+            <FormField label="所属学院/部门" hint="可填学院或部门编码，如 cs、graduate_school。">
+              <input type="text" value={uploadFields.owner_dept} onChange={(e) => setUploadFields((c) => ({ ...c, owner_dept: e.target.value }))} />
+            </FormField>
+            <FormField label="限定角色" hint="仅角色范围资料填写，如 undergraduate、graduate、teacher。">
+              <input type="text" value={uploadFields.owner_role} onChange={(e) => setUploadFields((c) => ({ ...c, owner_role: e.target.value }))} />
             </FormField>
             <FormField label="标签" spanTwo hint="标签显示在输入框下方；输入后回车创建。">
               <div className="tag-editor compact-tag-editor">

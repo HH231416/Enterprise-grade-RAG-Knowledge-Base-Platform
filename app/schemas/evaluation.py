@@ -53,7 +53,7 @@ class RunCreateRequest(AppBaseModel):
     dataset_uuid: str
     chunking_strategy: str = "default"
     chunking_params: dict | None = None
-    retrieval_strategy: str = "dense"
+    retrieval_strategy: str = "hybrid"
     retrieval_params: dict | None = None
     doc_uuids: list[str] = []
 

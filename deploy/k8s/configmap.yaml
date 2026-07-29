@@ -7,6 +7,7 @@ data:
   APP_ENV: production
   APP_HOST: 0.0.0.0
   APP_PORT: "18080"
+  SCENARIO_PROFILE: campus
   LOG_LEVEL: INFO
   STORAGE_ROOT: /data
   VECTOR_STORE_PROVIDER: milvus
@@ -20,9 +21,26 @@ data:
   HEALTH_PROBE_EXTERNAL_SERVICES: "false"
   METRICS_AUTH_ENABLED: "true"
   ALLOW_PROVIDER_FALLBACKS: "false"
+  FAILED_UPLOAD_RETENTION_HOURS: "72"
+  FAILED_UPLOAD_CLEANUP_BATCH_SIZE: "200"
+  # Models are hosted by the campus AI platform; RAG Pods never load model weights.
+  MODEL_SERVING_MODE: internal_gateway
+  LLM_PROVIDER: vllm
+  EMBEDDING_PROVIDER: tei
+  EMBEDDING_VECTOR_SIZE: "1024"
+  RETRIEVAL_STRATEGY: hybrid
+  HYBRID_FUSION_ALPHA: "0.7"
+  RERANK_ENABLED: "true"
+  RERANK_PROVIDER: tei
+  RERANK_API_BASE: http://tei-reranker.ai-platform.svc.cluster.local/rerank
+  RERANK_MODEL: BAAI/bge-reranker-v2-m3
+  IMAGE_RECOGNITION_PROVIDER: paddle_ocr
+  IMAGE_VLM_CONFIDENCE_THRESHOLD: "0.85"
+  IMAGE_CACHE_ENABLED: "true"
   PERMISSION_MODE: plugin
-  PERMISSION_PLUGIN: your_company.permissions.EnterprisePermissionChecker
+  PERMISSION_PLUGIN: app.permissions.campus.CampusPermissionChecker
   RETRIEVAL_AUTHENTICATED_IDENTITY_REQUIRED: "true"
+  TRUSTED_IDENTITY_HEADER_ENABLED: "true"
   EVALUATION_EXECUTION_MODE: celery
   ANSWER_JUDGE_ENABLED: "true"
   ANSWER_JUDGE_MAX_TOKENS: "320"

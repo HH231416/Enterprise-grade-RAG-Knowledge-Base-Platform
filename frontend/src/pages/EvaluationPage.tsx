@@ -39,7 +39,7 @@ export function EvaluationPage() {
   const [runForm, setRunForm] = useState({
     dataset_uuid: '',
     chunking_strategy: 'fixed',
-    retrieval_strategy: 'dense',
+    retrieval_strategy: 'hybrid',
     fusion_alpha: 0.7,
   })
 

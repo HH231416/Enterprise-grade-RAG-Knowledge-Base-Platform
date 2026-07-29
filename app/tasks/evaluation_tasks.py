@@ -51,6 +51,23 @@ def execute_evaluation_run_task(self, run_uuid: str, doc_uuids: list[str]) -> No
         session.close()  # 确保会话关闭，归还连接
 
 
+@celery_app.task(
+    name="knowledge_base.cleanup_expired_failed_uploads",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 2},
+)
+def cleanup_expired_failed_uploads_task() -> int:
+    """Remove raw files only after the failed-upload retry window ends."""
+    from app.services.failed_upload_cleanup import FailedUploadCleanupService
+
+    session = get_session_factory()()
+    try:
+        return FailedUploadCleanupService(session, get_settings()).purge_expired_files()
+    finally:
+        session.close()
+
+
 def enqueue_evaluation_run(run_uuid: str, doc_uuids: list[str]) -> str:
     """将评测运行任务入队到 Celery，返回任务 ID 供后续追踪。"""
     task = execute_evaluation_run_task.delay(run_uuid, doc_uuids)  # 异步发送任务

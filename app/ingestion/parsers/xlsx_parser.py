@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.utils.cell import range_boundaries
 
+from app.ingestion.image_assets import ImageAsset
 from app.ingestion.types import ParsedBlock
 
 
@@ -22,8 +24,10 @@ class XlsxParser:
     def parse(self, file_path: Path) -> list[ParsedBlock]:
         workbook = load_workbook(file_path, read_only=False, data_only=True)
         blocks: list[ParsedBlock] = []
+        image_assets: list[ImageAsset] = []
         try:
             for worksheet in workbook.worksheets:
+                self._collect_visuals(worksheet, file_path, image_assets, blocks)
                 merged_value_map, merged_group_columns = self._build_merged_metadata(worksheet)
                 row_records = [
                     (
@@ -129,10 +133,124 @@ class XlsxParser:
                             },
                         )
                     )
+
         finally:
             workbook.close()
 
+        if image_assets:
+            from app.ingestion.parsers.image_parser import ImageParser
+
+            try:
+                blocks.extend(ImageParser().parse_assets(image_assets))
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception("XLSX image extraction failed: %s", file_path)
         return blocks
+
+    @staticmethod
+    def _cell_name(row: int | None, column: int | None) -> str:
+        if row is None or column is None:
+            return "unknown"
+        return f"{chr(65 + column)}{row + 1}"
+
+    @classmethod
+    def _collect_visuals(cls, worksheet, file_path: Path, image_assets: list[ImageAsset], blocks: list[ParsedBlock]) -> None:
+        """Collect raster images and searchable metadata for vector charts."""
+        for image in getattr(worksheet, "_images", []):
+            image_format = (getattr(image, "format", None) or "png").lower()
+            anchor = getattr(image, "anchor", None)
+            from_cell = getattr(getattr(anchor, "_from", None), "col", None)
+            from_row = getattr(getattr(anchor, "_from", None), "row", None)
+            image_assets.append(
+                ImageAsset(
+                    content=image._data(),
+                    source_name=f"{file_path.name}#{worksheet.title}-image-{len(image_assets) + 1}",
+                    mime_type=f"image/{'jpeg' if image_format == 'jpg' else image_format}",
+                    sheet_name=worksheet.title,
+                    metadata={
+                        "source_xlsx": file_path.name,
+                        "extraction_method": "openpyxl_image",
+                        "anchor_column": from_cell + 1 if from_cell is not None else None,
+                        "anchor_row": from_row + 1 if from_row is not None else None,
+                    },
+                )
+            )
+
+        for chart_index, chart in enumerate(getattr(worksheet, "_charts", []), start=1):
+            anchor = getattr(chart, "anchor", None)
+            from_cell = getattr(getattr(anchor, "_from", None), "col", None)
+            from_row = getattr(getattr(anchor, "_from", None), "row", None)
+            chart_type = chart.__class__.__name__
+            series = cls._chart_series(worksheet, chart)
+            series_text = "\n".join(
+                f"series {item['index']}: categories={item['categories']}; values={item['values']}"
+                for item in series
+            )
+            blocks.append(
+                ParsedBlock(
+                    text=(
+                        f"Excel 图表：类型={chart_type}；工作表={worksheet.title}；"
+                        f"起始单元格={cls._cell_name(from_row, from_cell)}"
+                        f"{chr(10) + series_text if series_text else ''}"
+                    ),
+                    chunk_type="image_chart",
+                    sheet_name=worksheet.title,
+                    metadata={
+                        "parser": "openpyxl",
+                        "source_xlsx": file_path.name,
+                        "extraction_method": "openpyxl_chart_metadata",
+                        "chart_type": chart_type,
+                        "chart_index": chart_index,
+                        "chart_series": series,
+                    },
+                )
+            )
+
+    @classmethod
+    def _chart_series(cls, worksheet, chart) -> list[dict[str, object]]:
+        """Extract spreadsheet values behind chart series without rendering Office graphics."""
+        series_data: list[dict[str, object]] = []
+        for index, series in enumerate(getattr(chart, "ser", []), start=1):
+            value_formula = cls._series_formula(series, "val")
+            category_formula = cls._series_formula(series, "cat")
+            series_data.append(
+                {
+                    "index": index,
+                    "value_formula": value_formula,
+                    "category_formula": category_formula,
+                    "values": cls._formula_values(worksheet, value_formula),
+                    "categories": cls._formula_values(worksheet, category_formula),
+                }
+            )
+        return series_data
+
+    @staticmethod
+    def _series_formula(series, attribute: str) -> str | None:
+        reference = getattr(series, attribute, None)
+        for reference_name in ("numRef", "strRef"):
+            formula = getattr(getattr(reference, reference_name, None), "f", None)
+            if formula:
+                return str(formula)
+        return None
+
+    @staticmethod
+    def _formula_values(worksheet, formula: str | None) -> list[str]:
+        if not formula or "!" not in formula:
+            return []
+        sheet_name, cell_range = formula.rsplit("!", 1)
+        if sheet_name.strip("'") != worksheet.title:
+            return []
+        try:
+            min_col, min_row, max_col, max_row = range_boundaries(cell_range.replace("$", ""))
+        except ValueError:
+            return []
+        return [
+            _stringify(worksheet.cell(row=row, column=column).value)
+            for row in range(min_row, max_row + 1)
+            for column in range(min_col, max_col + 1)
+            if worksheet.cell(row=row, column=column).value is not None
+        ]
 
     @staticmethod
     def _apply_prefix_inheritance(row: list[str], inherited_prefix_values: list[str]) -> list[str]:

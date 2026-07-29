@@ -218,6 +218,27 @@ def test_search_returns_hits_for_authorized_user(client, sample_pdf_bytes):
     os.environ["INGESTION_MODE"] = "async"
     reset_settings_cache()
 
+
+def test_search_without_filters_uses_index_candidates(client, sample_pdf_bytes):
+    """无筛选且无权限插件时，检索应正常命中而不依赖全量文档预加载。"""
+    import os
+
+    os.environ["INGESTION_MODE"] = "sync"
+    from app.core.config import reset_settings_cache
+
+    reset_settings_cache()
+    _upload_sample_document(client, sample_pdf_bytes)
+    response = client.post(
+        "/api/v1/retrieval/search",
+        json={"query": "transfer approval two levels", "top_k": 5},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["hits"]
+
+    os.environ["INGESTION_MODE"] = "async"
+    reset_settings_cache()
+
 def test_qa_answer_returns_grounded_citations(client, sample_pdf_bytes):
     """测试 QA 回答返回 grounded 状态和引用片段。
 

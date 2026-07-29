@@ -29,6 +29,7 @@ class DocumentUpdateRequest(AppBaseModel):
     version: str | None = None
     access_level: str | None = None
     owner_dept: str | None = None
+    owner_role: str | None = None
     tags: list | None = None
     extra_meta: dict | None = None
 
@@ -62,6 +63,7 @@ class DocumentListItem(AppBaseModel):
     index_status: str
     access_level: str
     owner_dept: str | None
+    owner_role: str | None = None
     created_at: datetime
     updated_at: datetime
     file_ext: str = ""

@@ -6,6 +6,7 @@ from typing import List, Optional
 import fitz
 
 from app.ingestion.parsers.common import normalize_text
+from app.ingestion.image_assets import ImageAsset
 from app.ingestion.types import ParsedBlock
 
 
@@ -29,7 +30,7 @@ class PdfParser:
     def parse_with_images(self, file_path: Path, extract_images: bool = True) -> list[ParsedBlock]:
         """解析PDF，可选择提取图片内容"""
         # 首先获取文本内容
-        blocks = self.parse(file_path)
+        blocks = PdfParser.parse(self, file_path)
 
         if not extract_images:
             return blocks
@@ -45,7 +46,7 @@ class PdfParser:
             image_parser = ImageParser()
 
             # 识别图片内容
-            image_blocks = image_parser.parse_batch(images)
+            image_blocks = image_parser.parse_assets(images)
 
             # 为图片块添加PDF特定的元数据
             for i, block in enumerate(image_blocks):
@@ -65,9 +66,9 @@ class PdfParser:
 
         return blocks
 
-    def _extract_images(self, file_path: Path) -> List[bytes]:
+    def _extract_images(self, file_path: Path) -> List[ImageAsset]:
         """从PDF中提取所有图片"""
-        images = []
+        images: list[ImageAsset] = []
 
         try:
             with fitz.open(file_path) as doc:
@@ -79,7 +80,19 @@ class PdfParser:
                         xref = img[0]
                         base_image = doc.extract_image(xref)
                         image_bytes = base_image["image"]
-                        images.append(image_bytes)
+                        ext = base_image.get("ext", "jpg")
+                        images.append(
+                            ImageAsset(
+                                content=image_bytes,
+                                source_name=f"{file_path.name}#image-{len(images) + 1}",
+                                mime_type=f"image/{'jpeg' if ext == 'jpg' else ext}",
+                                page_no=page_num + 1,
+                                metadata={
+                                    "source_pdf": file_path.name,
+                                    "extraction_method": "pdf_image",
+                                },
+                            )
+                        )
 
             return images
 

@@ -58,6 +58,7 @@ export type DocumentItem = {
   index_status: string
   access_level: string
   owner_dept: string | null
+  owner_role?: string | null
   created_at: string
   updated_at: string
   file_ext: string
@@ -82,6 +83,7 @@ export type DocumentUpdatePayload = {
   version?: string
   access_level?: string
   owner_dept?: string
+  owner_role?: string
   tags?: string[]
   extra_meta?: Record<string, unknown>
 }
@@ -112,6 +114,7 @@ export type HealthData = {
 
 export type ConfigData = {
   app_env: string
+  scenario_profile?: string
   app_port: number
   provider_timeout_seconds: number
   provider_retry_count: number
@@ -127,6 +130,7 @@ export type ConfigData = {
   llm_provider: string
   llm_model: string
   dify_base_url: string
+  permission_mode?: string
 }
 
 export type SearchHit = {

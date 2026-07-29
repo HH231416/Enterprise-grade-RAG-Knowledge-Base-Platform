@@ -105,6 +105,67 @@ class HttpRerankProvider(BaseRerankProvider):
             return False
 
 
+class TeiRerankProvider(BaseRerankProvider):
+    """Campus TEI /rerank provider using the native query + texts contract."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self._api_base = settings.rerank_api_base or ""
+        self._api_key = settings.rerank_api_key or ""
+
+    def rerank(self, query: str, documents: list[str], top_n: int | None = None) -> list[RerankResult]:
+        if not documents:
+            return []
+        if not self._api_base:
+            raise AppError(
+                code=ErrorCode.RETRIEVAL_FAILED,
+                message="TEI rerank provider is not configured",
+                status_code=422,
+            )
+
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        payload = {"query": query, "texts": documents}
+
+        try:
+            response = httpx.post(
+                build_openai_compatible_url(self._api_base, "/rerank"),
+                headers=headers,
+                json=payload,
+                timeout=self.settings.provider_timeout_seconds,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as exc:
+            raise AppError(
+                code=ErrorCode.RETRIEVAL_FAILED,
+                message=f"TEI rerank request failed: {exc}",
+                status_code=422,
+            ) from exc
+
+        results_raw = data.get("results", []) if isinstance(data, dict) else data
+        results = [
+            RerankResult(
+                index=int(item.get("index", 0)),
+                score=float(item.get("score", item.get("relevance_score", 0.0))),
+                document=item.get("document"),
+            )
+            for item in results_raw
+            if isinstance(item, dict)
+        ]
+        results.sort(key=lambda item: item.score, reverse=True)
+        return results[:top_n] if top_n is not None else results
+
+    def probe(self) -> bool:
+        try:
+            self.rerank("probe", ["test document"])
+            return True
+        except Exception:
+            logger.exception("TEI rerank probe failed")
+            return False
+
+
 class LocalRerankProvider(BaseRerankProvider):
     """Text‑overlap fallback reranker using normalized word overlap."""
 
@@ -149,7 +210,10 @@ class LocalRerankProvider(BaseRerankProvider):
 
 
 def create_rerank_provider(settings: Settings) -> BaseRerankProvider:
-    """Factory: returns HttpRerankProvider if configured, otherwise LocalRerankProvider."""
-    if settings.rerank_enabled and settings.rerank_api_base and settings.rerank_api_key:
-        return HttpRerankProvider(settings)
+    """Factory for production TEI and compatible rerank services."""
+    if settings.rerank_enabled and settings.rerank_api_base:
+        if settings.rerank_provider == "tei":
+            return TeiRerankProvider(settings)
+        if settings.rerank_api_key:
+            return HttpRerankProvider(settings)
     return LocalRerankProvider()

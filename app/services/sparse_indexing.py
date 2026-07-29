@@ -38,6 +38,9 @@ class SparseIndexingService:
                         "page_no": chunk.page_no,
                         "sheet_name": chunk.sheet_name,
                         "section_title": chunk.section_title,
+                        "access_level": document.access_level,
+                        "owner_dept": document.owner_dept,
+                        "owner_role": document.owner_role,
                     },
                 }
             )
@@ -70,6 +73,9 @@ class SparseIndexingService:
                         "page_no": chunk.page_no,
                         "sheet_name": chunk.sheet_name,
                         "section_title": chunk.section_title,
+                        "access_level": document.access_level,
+                        "owner_dept": document.owner_dept,
+                        "owner_role": document.owner_role,
                     },
                 }
                 for chunk, document in rows

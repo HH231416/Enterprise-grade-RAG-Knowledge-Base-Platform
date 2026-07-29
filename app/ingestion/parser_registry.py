@@ -99,13 +99,15 @@ class ParserRegistry:
         from app.ingestion.parsers.html_parser import HtmlParser       # HTML 网页
         from app.ingestion.parsers.image_parser import ImageParser     # 图片（OCR 识别）
         from app.ingestion.parsers.markdown_parser import MarkdownParser  # Markdown
-        from app.ingestion.parsers.pdf_parser import PdfParser         # PDF
+        from app.ingestion.parsers.pdf_parser import PdfWithImagesParser  # PDF + embedded images
+        from app.ingestion.parsers.pptx_parser import PptxParser       # PowerPoint
         from app.ingestion.parsers.text_parser import TextParser       # 纯文本
         from app.ingestion.parsers.xlsx_parser import XlsxParser       # Excel 表格
 
         # 解析器类与其支持的文件类型映射表
         registrations: tuple[tuple[ParserFactory, tuple[str, ...]], ...] = (
-            (PdfParser, ("pdf",)),                                      # PDF
+            (PdfWithImagesParser, ("pdf",)),                            # PDF + embedded images
+            (PptxParser, ("pptx",)),                                    # PowerPoint
             (DocxParser, ("docx",)),                                    # Word
             (XlsxParser, ("xlsx",)),                                    # Excel
             (TextParser, ("txt", "text")),                              # 纯文本

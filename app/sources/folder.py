@@ -39,7 +39,8 @@ class FolderSourceConnector:
         documents: list[SourceDocument] = []
         skipped: list[dict] = []
         for file_path in self._iter_files():
-            relative_path = str(file_path.relative_to(self.folder_path))
+            # 同步记录会被 API、对象存储和不同操作系统共享，统一使用 POSIX 分隔符。
+            relative_path = file_path.relative_to(self.folder_path).as_posix()
             extension = file_path.suffix.lower().lstrip(".")
             if self.allowed_extensions and extension not in self.allowed_extensions:
                 skipped.append(

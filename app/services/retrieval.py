@@ -48,6 +48,7 @@ from app.schemas.retrieval import (
     UserContext,              # 用户上下文
 )
 from app.services.sparse_indexing import SparseIndexingService  # 稀疏索引构建服务
+from app.services.identity import IdentityService
 
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,7 @@ class RetrievalService:
         self.permission_checker = load_permission_checker()  # 权限检查器（插件化）
         self.sparse_index = SparseIndexProvider()           # BM25 稀疏索引
         self.sparse_indexing = SparseIndexingService()      # 稀疏索引构建服务
-        self.hybrid = HybridRetriever(alpha=0.7)            # 混合检索器（稠密权重 0.7）
+        self.hybrid = HybridRetriever(alpha=self.settings.hybrid_fusion_alpha)
         self.rerank_provider: BaseRerankProvider | None = None  # Rerank 提供者（延迟初始化）
 
     def search(
@@ -110,6 +111,12 @@ class RetrievalService:
         # 解析用户上下文（简化版，不再从请求头强制提取）
         user_context = request.user_context
 
+        if trusted_user_context and user_context is not None:
+            user_context = IdentityService(self.session).resolve_user_context(user_context)
+        elif self.settings.permission_mode != "none" or authenticated_identity_required:
+            # 生产权限场景下，请求体中的 roles/departments 不是可信身份来源。
+            user_context = None
+
         # 如果要求认证身份但用户未提供或未认证，返回 401 错误
         if authenticated_identity_required and (not user_context or not user_context.is_authenticated):
             raise AppError(
@@ -120,28 +127,36 @@ class RetrievalService:
 
         self._last_user_context = user_context  # 保存最后一次用户上下文（供 debug_search 使用）
         rewritten_query = self._rewrite_query(request.query)  # 查询改写：标准化空白字符
-        documents = self._load_documents(filters=request.filters)  # 加载所有未删除的文档
+        # 无权限模式且未指定结构化过滤时，不先扫描整张 documents 表。
+        # 先让向量/稀疏索引召回，再按命中的 doc_uuid 批量补齐元数据，避免百万级
+        # 文档库的每次查询都把全部文档加载进 API 进程。
+        documents = (
+            self._load_documents(filters=request.filters)
+            if self.settings.permission_mode != "none" or request.filters
+            else []
+        )
 
         # 权限过滤：根据用户上下文过滤可访问的文档
         allowed_documents = self._resolve_allowed_documents(
             documents=documents,
             user_context=user_context,
         )
+        if self.settings.permission_mode == "none" and not request.filters:
+            allowed_documents = None
 
         # 如果用户无权访问任何文档，直接返回空结果
-        if not allowed_documents:
+        if allowed_documents is not None and not allowed_documents:
             return self._build_empty_response(request, rewritten_query, started)
 
         # 根据检索策略分发
-        strategy = request.strategy or "dense"  # 默认使用稠密检索
-        if strategy == "hybrid":
-            return self._search_hybrid(request, rewritten_query, allowed_documents, started)
-        return self._search_dense(request, rewritten_query, allowed_documents, started)
+        request = self._enforce_production_strategy(request)
+        return self._search_hybrid(request, rewritten_query, allowed_documents, started)
 
     def debug_search(
         self,
         request: SearchRequest,
         *,
+        trusted_user_context: bool = False,
         authenticated_identity_required: bool = False,
     ) -> DebugSearchResponseData:
         """调试检索接口：返回检索全过程的详细评分分解和调试信息。
@@ -156,9 +171,11 @@ class RetrievalService:
         # 先执行普通检索
         result = self.search(
             request,
+            trusted_user_context=trusted_user_context,
             authenticated_identity_required=authenticated_identity_required,
         )
-        strategy = request.strategy or "dense"
+        request = self._enforce_production_strategy(request)
+        strategy = request.strategy
 
         # 构建评分分解列表：每个命中文档的完整评分明细
         ranking_debug = [
@@ -188,11 +205,20 @@ class RetrievalService:
             retrieval_strategy=strategy,     # 检索策略标识
             dense_hits=getattr(self, "_last_dense_hits_debug", []),   # 稠密检索命中详情
             sparse_hits=getattr(self, "_last_sparse_hits_debug", []), # 稀疏检索命中详情
-            fusion_alpha=0.7 if strategy == "hybrid" else None,  # 混合检索的 alpha 值
+            fusion_alpha=self.settings.hybrid_fusion_alpha if strategy == "hybrid" else None,
             rerank_enabled=rerank_info[0],   # Rerank 是否启用
             rerank_model=rerank_info[1],     # Rerank 模型名称
             rerank_latency_ms=rerank_info[2],  # Rerank 耗时（毫秒）
         )
+
+    def _enforce_production_strategy(self, request: SearchRequest) -> SearchRequest:
+        if request.strategy != self.settings.retrieval_strategy:
+            logger.info(
+                "Overriding requested retrieval strategy %s with production strategy %s",
+                request.strategy,
+                self.settings.retrieval_strategy,
+            )
+        return request.model_copy(update={"strategy": self.settings.retrieval_strategy})
 
     # ── dense search ──────────────────────────────────────────────
 
@@ -200,7 +226,7 @@ class RetrievalService:
         self,
         request: SearchRequest,
         rewritten_query: str,
-        allowed_documents: dict[str, Document],
+        allowed_documents: dict[str, Document] | None,
         started: float,
     ) -> SearchResponseData:
         """稠密检索：纯语义向量检索流程。
@@ -235,6 +261,10 @@ class RetrievalService:
         chunk_ids = [hit.metadata.get("chunk_uuid") for hit in vector_hits if hit.metadata.get("chunk_uuid")]
         # 批量加载 chunk 对象
         chunks_by_uuid = self._load_chunks_by_uuid(chunk_ids)
+        if allowed_documents is None:
+            allowed_documents = self._load_documents_by_uuid(
+                {str(chunk.doc_uuid) for chunk in chunks_by_uuid.values()}
+            )
         # 计算 BM25 text_score（仅用于展示和调试，不参与排序）
         sparse_scores = {
             hit.chunk_uuid: hit.score
@@ -264,12 +294,13 @@ class RetrievalService:
         rerank_scores: dict[str, tuple[float, float]] = {}  # chunk_uuid → (rerank_score, pre_rerank)
         if self._is_rerank_enabled():
             rr_started = time.perf_counter()
+            pre_rerank_scores = {str(item[2].chunk_uuid): item[0] for item in ranked}
             ranked = self._apply_rerank_dense(ranked, rewritten_query)
             rerank_latency = int((time.perf_counter() - rr_started) * 1000)
             self._last_rerank_latency = rerank_latency
             for item in ranked:
                 chunk_uuid = str(item[2].chunk_uuid)
-                rerank_scores[chunk_uuid] = (item[0], 0.0)
+                rerank_scores[chunk_uuid] = (item[0], pre_rerank_scores[chunk_uuid])
 
         # 截取 top_k 个最终结果
         top_hits = ranked[: request.top_k]
@@ -335,7 +366,7 @@ class RetrievalService:
         self,
         request: SearchRequest,
         rewritten_query: str,
-        allowed_documents: dict[str, Document],
+        allowed_documents: dict[str, Document] | None,
         started: float,
     ) -> SearchResponseData:
         """混合检索：稠密 + 稀疏双路召回 + Alpha 加权融合。
@@ -372,6 +403,10 @@ class RetrievalService:
         sparse_chunk_ids = [h.chunk_uuid for h in sparse_hits]
         all_chunk_ids = list(set(chunk_ids + sparse_chunk_ids))  # 去重合并
         chunks_by_uuid = self._load_chunks_by_uuid(all_chunk_ids)
+        if allowed_documents is None:
+            allowed_documents = self._load_documents_by_uuid(
+                {str(chunk.doc_uuid) for chunk in chunks_by_uuid.values()}
+            )
 
         # ── 构建稠密命中列表（带权限过滤） ──
         dense_hits = []
@@ -433,13 +468,12 @@ class RetrievalService:
         rerank_scores: dict[str, tuple[float, float]] = {}
         if self._is_rerank_enabled():
             rr_started = time.perf_counter()
-            # 先记录 Rerank 前得分
-            for i in range(len(ranked)):
-                score, dense_s, sparse_s, doc, chunk = ranked[i]
-                rerank_scores[str(chunk.chunk_uuid)] = (score, 0.0)
+            pre_rerank_scores = {str(item[4].chunk_uuid): item[0] for item in ranked}
             ranked = self._apply_rerank_hybrid(ranked, rewritten_query)
             rerank_latency = int((time.perf_counter() - rr_started) * 1000)
             self._last_rerank_latency = rerank_latency
+            for score, _, _, _, chunk in ranked:
+                rerank_scores[str(chunk.chunk_uuid)] = (score, pre_rerank_scores[str(chunk.chunk_uuid)])
 
         # 截取 top_k
         top_hits = ranked[: request.top_k]
@@ -462,7 +496,7 @@ class RetrievalService:
                 updated_at=document.updated_at,
                 score=final_score,       # 融合得分
                 vector_score=dense_score,  # 稠密路得分
-                text_score=None,          # 混合检索不单独设 text_score
+                text_score=sparse_score,
                 sparse_score=sparse_score,  # 稀疏路得分
                 rerank_score=rerank_scores.get(str(chunk.chunk_uuid), (None, None))[0],
                 pre_rerank_score=rerank_scores.get(str(chunk.chunk_uuid), (None, None))[1],
@@ -663,6 +697,16 @@ class RetrievalService:
                 normalized_exts = [item.strip().lower() for item in filters.file_ext if item and item.strip()]
                 if normalized_exts:
                     stmt = stmt.where(func.lower(Document.file_ext).in_(normalized_exts))
+            # 按访问级别过滤，适合校园公共/校内/院系/角色资料的分层检索。
+            if filters.access_level:
+                normalized_levels = [item.strip().lower() for item in filters.access_level if item and item.strip()]
+                if normalized_levels:
+                    stmt = stmt.where(func.lower(Document.access_level).in_(normalized_levels))
+            # 按资料归属学院/部门过滤，避免跨院系检索无关资料。
+            if filters.owner_dept:
+                normalized_departments = [item.strip().lower() for item in filters.owner_dept if item and item.strip()]
+                if normalized_departments:
+                    stmt = stmt.where(func.lower(Document.owner_dept).in_(normalized_departments))
             # 按创建日期范围过滤
             if filters.date_from:
                 stmt = stmt.where(Document.created_at >= filters.date_from)
@@ -695,6 +739,22 @@ class RetrievalService:
         stmt = select(DocumentChunk).where(DocumentChunk.chunk_uuid.in_(normalized))
         chunks = list(self.session.scalars(stmt))
         return {str(chunk.chunk_uuid): chunk for chunk in chunks}
+
+    def _load_documents_by_uuid(self, doc_uuids: set[str]) -> dict[str, Document]:
+        """只加载召回结果涉及的文档，避免无过滤检索扫描全量文档。"""
+        normalized: list[UUID] = []
+        for doc_uuid in doc_uuids:
+            try:
+                normalized.append(UUID(str(doc_uuid)))
+            except ValueError:
+                logger.warning("Skipping invalid doc_uuid from retrieval index: %s", doc_uuid)
+        if not normalized:
+            return {}
+        stmt = select(Document).where(
+            Document.doc_uuid.in_(normalized),
+            Document.deleted_at.is_(None),
+        )
+        return {str(document.doc_uuid): document for document in self.session.scalars(stmt)}
 
     def _resolve_allowed_documents(
         self,
@@ -746,6 +806,7 @@ class RetrievalService:
             "access_level": document.access_level,
             "tags": document.tags,
             "owner_dept": document.owner_dept,
+            "owner_role": document.owner_role,
             "created_by": document.created_by,
             "title": document.title,
             "file_ext": document.file_ext,
@@ -766,7 +827,11 @@ class RetrievalService:
         """将 RetrievalFilters 对象序列化为字典（用于日志和调试）。"""
         return filters.model_dump(mode="json", exclude_none=True) if filters else {}
 
-    def _build_vector_filters(self, filters: RetrievalFilters | None, allowed_documents: dict[str, Document]) -> dict:
+    def _build_vector_filters(
+        self,
+        filters: RetrievalFilters | None,
+        allowed_documents: dict[str, Document] | None,
+    ) -> dict:
         """构建向量搜索的过滤条件：限定为权限允许的文档 UUID 列表。
 
         面试点：为什么这里把 filters 参数传入了但不使用？
@@ -774,6 +839,8 @@ class RetrievalService:
         层面完成，向量搜索层面只需传 doc_uuid 白名单即可。保留参数是为
         未来可能在向量数据库层面直接做结构化过滤做准备。
         """
+        if allowed_documents is None:
+            return {}
         return {"doc_uuid": list(allowed_documents.keys())}
 
     def _log_search(

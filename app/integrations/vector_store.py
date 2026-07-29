@@ -358,6 +358,7 @@ class VectorStoreClient:
                     "section_title",
                     "access_level",
                     "owner_dept",
+                    "owner_role",
                     "updated_at",
                 ],
                 search_params={"metric_type": "COSINE"},

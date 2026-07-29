@@ -1,0 +1,5 @@
+{"query":"研究生申请休学需要哪些材料？","filters":{"source_module":["administration"]}}
+{"query":"计算机学院培养方案的学分要求是什么？","filters":{"source_module":["teaching"],"owner_dept":["computer_science"]}}
+{"query":"实验室服务器如何申请访问权限？","filters":{"source_module":["research"],"access_level":["department"]}}
+{"query":"图书馆校外访问数据库如何配置？","filters":{"source_module":["library"]}}
+{"query":"本学期奖学金评定时间和流程是什么？","filters":{"source_module":["administration","campus_notice"]}}

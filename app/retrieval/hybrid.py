@@ -107,8 +107,8 @@ class HybridRetriever:
         s_min, s_max = min(sparse_scores), max(sparse_scores)
 
         # 计算归一化的分母（极差），若极差为 0（所有分数相同）则设为 1.0 避免除零
-        d_range = d_max - d_min if d_max != d_min else 1.0
-        s_range = s_max - s_min if s_max != s_min else 1.0
+        d_range = d_max - d_min
+        s_range = s_max - s_min
 
         # 构建以 chunk_uuid 为键的快速查找字典，O(1) 查找
         dense_map: dict[str, DenseHit] = {h.chunk_uuid: h for h in dense_hits}
@@ -123,8 +123,10 @@ class HybridRetriever:
 
             # Min-Max 归一化公式：(score - min) / (max - min)，将分数映射到 [0, 1] 区间
             # 若该 chunk 在某侧无命中，归一化分数为 0.0（对融合贡献为零）
-            d_norm = (d.score - d_min) / d_range if d else 0.0
-            s_norm = (s.score - s_min) / s_range if s else 0.0
+            # A one-item candidate set has no relative spread, but its only hit must
+            # retain full channel evidence instead of being normalized to zero.
+            d_norm = 1.0 if d and d_range == 0 else ((d.score - d_min) / d_range if d else 0.0)
+            s_norm = 1.0 if s and s_range == 0 else ((s.score - s_min) / s_range if s else 0.0)
 
             # Alpha 加权融合公式：fusion_score = α × 稠密归一化分数 + (1-α) × 稀疏归一化分数
             fusion_score = self.alpha * d_norm + (1 - self.alpha) * s_norm

@@ -15,7 +15,7 @@ export function RetrievalPage() {
   const [fieldOptions, setFieldOptions] = useState<FieldOptionsConfig>(DEFAULT_FIELD_OPTIONS_CONFIG)
   const [debugForm, setDebugForm] = useState({
     query: '',
-    strategy: 'dense',
+    strategy: 'hybrid',
     fusionAlpha: 0.7,
     sourceModule: '',
   })

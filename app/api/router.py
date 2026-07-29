@@ -19,6 +19,7 @@ from app.api.qa import router as qa_router                     # 问答接口（
 from app.api.qa_agent import router as qa_agent_router         # 问答 Agent 接口（状态机版）
 from app.api.qa_conversation import router as qa_conversation_router  # 多轮对话接口
 from app.api.retrieval import router as retrieval_router       # 检索接口
+from app.api.sources import router as sources_router           # 文件夹/对象存储批量同步
 from app.api.wecom import router as wecom_router               # 企业微信机器人回调
 
 
@@ -33,6 +34,7 @@ api_router.include_router(dify_router)            # /dify/*
 api_router.include_router(feishu_router)          # /feishu/*
 api_router.include_router(wecom_router)           # /wecom/*
 api_router.include_router(documents_router)       # /documents/*
+api_router.include_router(sources_router)         # /sources/*
 api_router.include_router(jobs_router)            # /jobs/*
 api_router.include_router(knowledge_router)       # /knowledge/*
 api_router.include_router(retrieval_router)       # /retrieval/*

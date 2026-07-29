@@ -13,18 +13,22 @@ export const FIELD_ORDER: FieldKey[] = ['source_module', 'source_type']
 export const DEFAULT_FIELD_OPTIONS_CONFIG: FieldOptionsConfig = {
   fields: {
     source_module: [
-      { value: 'oa', label: 'OA', enabled: true, sort_order: 10 },
-      { value: 'hr', label: 'HR', enabled: true, sort_order: 20 },
-      { value: 'crm', label: 'CRM', enabled: true, sort_order: 30 },
-      { value: 'general', label: '通用', enabled: true, sort_order: 40 },
+      { value: 'administration', label: '行政制度与办事流程', enabled: true, sort_order: 10 },
+      { value: 'campus_notice', label: '官网信息与通知公告', enabled: true, sort_order: 20 },
+      { value: 'teaching', label: '教务与课程体系', enabled: true, sort_order: 30 },
+      { value: 'research', label: '学术研究资源', enabled: true, sort_order: 40 },
+      { value: 'im_knowledge', label: '即时通讯与讨论', enabled: true, sort_order: 50 },
+      { value: 'library', label: '图书馆与公共资源', enabled: true, sort_order: 60 },
     ],
     source_type: [
       { value: 'rule_doc', label: '制度规范', enabled: true, sort_order: 10 },
-      { value: 'faq', label: 'FAQ问答', enabled: true, sort_order: 20 },
-      { value: 'manual', label: '操作手册', enabled: true, sort_order: 30 },
-      { value: 'policy', label: '政策文件', enabled: true, sort_order: 40 },
-      { value: 'notice', label: '通知公告', enabled: true, sort_order: 50 },
-      { value: 'other', label: '其他文档', enabled: true, sort_order: 60 },
+      { value: 'procedure', label: '办事指南', enabled: true, sort_order: 20 },
+      { value: 'notice', label: '通知公告', enabled: true, sort_order: 30 },
+      { value: 'course', label: '课程资料', enabled: true, sort_order: 40 },
+      { value: 'paper', label: '学术论文', enabled: true, sort_order: 50 },
+      { value: 'experiment', label: '实验记录', enabled: true, sort_order: 60 },
+      { value: 'chat', label: '聊天记录', enabled: true, sort_order: 70 },
+      { value: 'public_resource', label: '公开资源', enabled: true, sort_order: 80 },
     ],
   },
 }

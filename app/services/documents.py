@@ -22,7 +22,7 @@ from app.sources.upload import UploadSourceConnector
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_EXTENSIONS = {"pdf", "docx", "xlsx", "txt", "text", "md", "markdown", "html", "htm", "csv", "eml", "jsonl", "chat.jsonl", "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp"}
+ALLOWED_EXTENSIONS = {"pdf", "docx", "xlsx", "pptx", "txt", "text", "md", "markdown", "html", "htm", "csv", "eml", "jsonl", "chat.jsonl", "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp"}
 
 
 class DocumentService:
@@ -42,6 +42,7 @@ class DocumentService:
         version: str,
         access_level: str,
         owner_dept: str | None,
+        owner_role: str | None,
         tags: str | None,
         extra_meta: str | None,
     ) -> tuple[Document, IngestionJob, int | None]:
@@ -58,6 +59,7 @@ class DocumentService:
             version=version,
             access_level=access_level,
             owner_dept=owner_dept,
+            owner_role=owner_role,
             tags=parsed_tags,
             extra_meta=parsed_extra_meta,
         )
@@ -72,6 +74,7 @@ class DocumentService:
         version: str,
         access_level: str,
         owner_dept: str | None,
+        owner_role: str | None = None,
         tags: list | None = None,
         extra_meta: dict | None = None,
     ) -> tuple[Document, IngestionJob, int | None]:
@@ -140,6 +143,7 @@ class DocumentService:
             index_status="pending",
             access_level=access_level,
             owner_dept=owner_dept,
+            owner_role=owner_role,
             tags=parsed_tags,
             extra_meta={**source_document.metadata, **parsed_extra_meta},
         )

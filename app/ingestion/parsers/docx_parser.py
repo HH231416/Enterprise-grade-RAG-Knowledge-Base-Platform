@@ -9,7 +9,9 @@ from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.table import Table
 from docx.text.paragraph import Paragraph
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
+from app.ingestion.image_assets import ImageAsset
 from app.ingestion.parsers.common import normalize_text
 from app.ingestion.types import ParsedBlock
 
@@ -76,4 +78,47 @@ class DocxParser:
                     )
 
         flush_paragraphs()
+        blocks.extend(self._parse_embedded_images(document, file_path))
         return blocks
+
+    @staticmethod
+    def _parse_embedded_images(document: DocxDocument, file_path: Path) -> list[ParsedBlock]:
+        assets: list[ImageAsset] = []
+        for relation in document.part.rels.values():
+            if relation.reltype != RT.IMAGE:
+                continue
+            image_part = relation.target_part
+            suffix = Path(str(image_part.partname)).suffix.lower() or ".jpg"
+            mime_type = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".bmp": "image/bmp",
+                ".tif": "image/tiff",
+                ".tiff": "image/tiff",
+            }.get(suffix, "image/jpeg")
+            assets.append(
+                ImageAsset(
+                    content=image_part.blob,
+                    source_name=f"{file_path.name}#image-{len(assets) + 1}",
+                    mime_type=mime_type,
+                    metadata={
+                        "source_docx": file_path.name,
+                        "extraction_method": "docx_relationship",
+                        "relationship_id": relation.rId,
+                    },
+                )
+            )
+        if not assets:
+            return []
+        try:
+            from app.ingestion.parsers.image_parser import ImageParser
+
+            return ImageParser().parse_assets(assets)
+        except Exception:
+            # Preserve the document's text if an optional image provider is unavailable.
+            import logging
+
+            logging.getLogger(__name__).exception("DOCX image extraction failed: %s", file_path)
+            return []

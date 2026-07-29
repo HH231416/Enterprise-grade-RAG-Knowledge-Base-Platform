@@ -40,6 +40,7 @@ class ImageCaptionProvider:
         self,
         image_data: Union[bytes, Path, str],
         prompt: str | None = None,
+        mime_type: str | None = None,
     ) -> str:
         """生成图片描述"""
         if not self.is_configured():
@@ -60,10 +61,10 @@ class ImageCaptionProvider:
                 )
             with open(path, "rb") as f:
                 image_bytes = f.read()
-            mime_type = self._get_mime_type(path.suffix)
+            mime_type = mime_type or self._get_mime_type(path.suffix)
         else:
             image_bytes = image_data
-            mime_type = "image/jpeg"
+            mime_type = mime_type or "image/jpeg"
 
         # 编码为 base64
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")

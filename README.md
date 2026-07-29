@@ -8,7 +8,6 @@ cd frontend
 npm run dev
 
 
-
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green.svg)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/react-19-blue.svg)](https://react.dev/)
@@ -83,7 +82,7 @@ npm run dev
 ## ✨ 功能清单
 
 ### 📄 文档处理
-- **10+ 格式支持**：PDF、Word、Excel、Markdown、HTML、CSV、邮件（EML）、聊天记录、图片（6 种格式）、纯文本
+- **10+ 格式支持**：PDF、Word、Excel、PowerPoint、Markdown、HTML、CSV、邮件（EML）、聊天记录、图片（8 种格式）、纯文本；PDF/Word/Excel/HTML/PPTX 可提取内嵌图片
 - **图片识别**：PaddleOCR 文字识别 + 多模态大模型描述（千问 VL），支持表格检测
 - **PDF 深度解析**：自动提取 PDF 中嵌入的图片并识别
 

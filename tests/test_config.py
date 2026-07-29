@@ -67,3 +67,56 @@ def test_explicit_local_provider_stays_local(monkeypatch):
     settings = Settings()
 
     assert settings.vector_store_provider == "local"
+
+
+def test_internal_gateway_provider_configuration(monkeypatch):
+    monkeypatch.setenv("MODEL_SERVING_MODE", "internal_gateway")
+    monkeypatch.setenv("LLM_PROVIDER", "vLLM")
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "TEI")
+
+    settings = Settings()
+
+    assert settings.model_serving_mode == "internal_gateway"
+    assert settings.llm_provider == "vllm"
+    assert settings.embedding_provider == "tei"
+
+
+def test_invalid_model_serving_provider_is_rejected(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "unsupported-provider")
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("FAILED_UPLOAD_RETENTION_HOURS", "-1"),
+        ("FAILED_UPLOAD_CLEANUP_BATCH_SIZE", "0"),
+    ],
+)
+def test_failed_upload_retention_configuration_is_validated(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_production_internal_gateway_requires_vllm_and_tei(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_API_KEY", "prod-api-key")
+    monkeypatch.setenv("INTERNAL_TOKEN", "prod-internal-token")
+    monkeypatch.setenv("PERMISSION_MODE", "plugin")
+    monkeypatch.setenv("MODEL_SERVING_MODE", "internal_gateway")
+    monkeypatch.setenv("LLM_PROVIDER", "vllm")
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "tei")
+    monkeypatch.setenv("LLM_API_BASE", "http://vllm.internal/v1")
+    monkeypatch.setenv("EMBEDDING_API_BASE", "http://tei.internal/v1")
+    monkeypatch.setenv("LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "embedding-key")
+    monkeypatch.setenv("LLM_MODEL", "Qwen/Qwen3-14B")
+    monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+
+    settings = Settings()
+
+    assert settings.model_serving_mode == "internal_gateway"

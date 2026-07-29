@@ -17,7 +17,7 @@ class AgentAnswerRequest(AppBaseModel):
     filters: RetrievalFilters | None = None                 # 检索过滤条件（可选）
     user_context: UserContext | None = None                 # 用户上下文（用户ID、部门等）
     generation_options: GenerationOptions | None = None     # LLM 生成选项（温度、最大 Token 等）
-    retrieval_strategy: Literal["dense", "hybrid"] = "dense"  # 检索策略：dense（稠密）或 hybrid（混合）
+    retrieval_strategy: Literal["hybrid"] = "hybrid"
     max_retrieval_rounds: int = Field(default=2, ge=1, le=2)  # 最大检索轮次，默认 2（目前限制 ≤2）
 
 

@@ -6,6 +6,7 @@ resources:
   - api-deployment.yaml
   - api-service.yaml
   - worker-deployment.yaml
+  - failed-upload-cleanup-cronjob.yaml
   - autoscaling.yaml
   - availability-policy.yaml
   - ingress.yaml

@@ -50,6 +50,7 @@ class SourceSyncService:
             version=request.version,
             access_level=request.access_level,
             owner_dept=request.owner_dept,
+            owner_role=request.owner_role,
             tags=request.tags,
             extra_meta=request.extra_meta,
             folder_path=str(folder_path),
@@ -78,6 +79,7 @@ class SourceSyncService:
             version=request.version,
             access_level=request.access_level,
             owner_dept=request.owner_dept,
+            owner_role=request.owner_role,
             tags=request.tags,
             extra_meta=request.extra_meta,
             folder_path=None,
@@ -95,6 +97,7 @@ class SourceSyncService:
         version: str,
         access_level: str,
         owner_dept: str | None,
+        owner_role: str | None,
         tags: list,
         extra_meta: dict,
         folder_path: str | None,
@@ -125,6 +128,7 @@ class SourceSyncService:
                 version=version,
                 access_level=access_level,
                 owner_dept=owner_dept,
+                owner_role=owner_role,
                 tags=tags,
                 extra_meta=extra_meta,
             )
@@ -215,6 +219,7 @@ class SourceSyncService:
         version: str,
         access_level: str,
         owner_dept: str | None,
+        owner_role: str | None,
         tags: list,
         extra_meta: dict,
     ) -> tuple[int, int, int]:
@@ -238,6 +243,7 @@ class SourceSyncService:
                     version=version,
                     access_level=access_level,
                     owner_dept=owner_dept,
+                    owner_role=owner_role,
                     tags=tags,
                     extra_meta=extra_meta,
                 )

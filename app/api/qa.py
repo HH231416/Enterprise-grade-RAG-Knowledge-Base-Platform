@@ -33,6 +33,7 @@ def answer(
         request = request.model_copy(update={"user_context": trusted_user_context})
     data = QaService(session).answer(
         request,
+        trusted_user_context=trusted_user_context is not None,
         authenticated_identity_required=settings.retrieval_authenticated_identity_required,
     )
     return success_response(data.model_dump(mode="json"), trace_id)

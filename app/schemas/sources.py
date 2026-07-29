@@ -16,6 +16,7 @@ class FolderSyncRequest(AppBaseModel):
     version: str = "v1"
     access_level: str = "internal"
     owner_dept: str | None = None
+    owner_role: str | None = None
     tags: list = Field(default_factory=list)
     extra_meta: dict = Field(default_factory=dict)
 
@@ -33,6 +34,7 @@ class ObjectStorageSyncRequest(AppBaseModel):
     version: str = "v1"
     access_level: str = "internal"
     owner_dept: str | None = None
+    owner_role: str | None = None
     tags: list = Field(default_factory=list)
     extra_meta: dict = Field(default_factory=dict)
 

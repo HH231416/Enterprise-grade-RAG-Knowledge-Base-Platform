@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from app.schemas.common import AppBaseModel
 
@@ -21,6 +22,8 @@ class RetrievalFilters(AppBaseModel):
     source_module: list[str] | None = None
     source_type: list[str] | None = None
     file_ext: list[str] | None = None
+    access_level: list[str] | None = None
+    owner_dept: list[str] | None = None
     date_from: datetime | None = None
     date_to: datetime | None = None
 
@@ -29,7 +32,7 @@ class SearchRequest(AppBaseModel):
     query: str
     top_k: int = 8
     min_score: float = 0.2
-    strategy: str = "dense"
+    strategy: Literal["hybrid"] = "hybrid"
     strategy_params: dict | None = None
     filters: RetrievalFilters | None = None
     user_context: UserContext | None = None
@@ -79,7 +82,7 @@ class DebugSearchResponseData(SearchResponseData):
     raw_filters: dict
     user_context: dict
     ranking_debug: list[dict]
-    retrieval_strategy: str = "dense"
+    retrieval_strategy: str = "hybrid"
     dense_hits: list[DenseHitDebug] = []
     sparse_hits: list[SparseHitDebug] = []
     fusion_alpha: float | None = None
