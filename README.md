@@ -1,406 +1,214 @@
-企业级 RAG（检索增强生成）知识库管理平台。将企业的文档自动消化为可对话的知识库，支持 IM 机器人、Dify 集成、HTTP API 等多种接入方式。
+# Enterprise-grade RAG Knowledge Base Platform
 
-1. 启动后端服务
-python -m uvicorn app.main:app --host 127.0.0.1 --port 18080 --reload
+面向企业和校园场景的检索增强生成（RAG）知识库平台。系统将文档解析、切分、索引、检索、重排和生成式问答串联为可管理、可评测、可集成的知识服务，并提供 Web 管理界面、HTTP API、Dify、飞书和企业微信接入能力。
 
-2. 启动前端服务
-cd frontend
-npm run dev
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-19-61DAFB)](https://react.dev/)
 
+## 核心能力
 
-[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green.svg)](https://fastapi.tiangolo.com/)
-[![React](https://img.shields.io/badge/react-19-blue.svg)](https://react.dev/)
+- 文档摄入：支持 PDF、Word、Excel、PowerPoint、Markdown、HTML、CSV、邮件、聊天记录、纯文本和常见图片格式；PDF、Word、PowerPoint 可提取内嵌图片。
+- 智能切分：提供固定长度、结构化、表格感知、父子分层、语义和聊天记录等切分策略，并支持切分预览。
+- 多路检索：支持稠密检索、BM25 稀疏检索、混合检索和 Rerank 精排；可选本地内存、Milvus 或 Zilliz 向量存储，以及 OpenSearch 稀疏索引。
+- 可控问答：回答附带来源片段，可配置证据阈值、查询改写和答案质量判定，降低无依据回答风险。
+- 运营管理：包含文档管理、知识库查询、任务状态、评测集与评测运行、数据源同步、系统配置和健康检查。
+- 企业集成：支持 Dify 外部知识库、飞书和企业微信机器人；提供可插拔权限检查、会话认证、链路追踪、限流与 Prometheus 指标。
 
----
+## 架构
 
-## 📖 学习路径
+```text
+React + Vite 管理界面 / Dify / 飞书 / 企业微信 / HTTP 客户端
+                              |
+                         FastAPI API
+                              |
+      文档解析 -> 切分 -> 向量化 -> 稠密/稀疏检索 -> Rerank -> LLM 回答
+                              |
+ PostgreSQL / SQLite     Milvus / Zilliz     OpenSearch     Redis
+```
 
-如果是第一次接触这个项目，建议按以下顺序阅读代码：
+后端采用 FastAPI、SQLAlchemy 和 Pydantic Settings；前端采用 React、TypeScript 和 Vite。模型服务使用 OpenAI 兼容接口，可对接 vLLM、TEI、Ollama 或云端模型服务。
 
-### 第一阶段：理解架构（30 分钟）
+## 项目结构
 
-| 顺序 | 文件 | 看懂什么 |
-|------|------|----------|
-| 1 | `app/main.py` | 应用入口：FastAPI 如何组装中间件、路由、生命周期 |
-| 2 | `app/api/router.py` | 所有 API 路由注册，一眼看清系统有哪些功能模块 |
-| 3 | `app/core/config.py` | 配置系统：Pydantic Settings 如何管理 60+ 配置项 |
-| 4 | `app/db/base.py` + `app/db/session.py` | 数据库基础：SQLAlchemy ORM 基类和会话管理 |
+```text
+app/
+  api/             REST API 路由
+  core/            配置、日志、中间件、异常处理和指标
+  db/              SQLAlchemy 运行时与数据类型
+  ingestion/       解析器、文档切分和摄入流程
+  integrations/    LLM、Embedding、向量库、重排和 IM 集成
+  models/          数据模型
+  retrieval/       稀疏检索、混合召回和结果融合
+  services/        文档、问答、评测、任务和身份等业务服务
+frontend/          React 管理界面
+deploy/k8s/        Kubernetes 生产部署清单
+docs/              API、部署和外部集成文档
+tests/             单元、集成与验收测试
+```
 
-> 学完这阶段，你能回答：**系统有哪些模块？配置怎么管？请求怎么进来？**
+## 快速开始
 
-### 第二阶段：核心链路（60 分钟）
-
-| 顺序 | 文件 | 看懂什么 |
-|------|------|----------|
-| 5 | `app/api/documents.py` | 文档上传 API：接收文件 → 解析 → 分块 → 向量化 |
-| 6 | `app/ingestion/parser_registry.py` | 解析器注册：根据文件后缀自动选择对应解析器 |
-| 7 | `app/ingestion/chunking.py` | 切分引擎：6 种策略如何将文本切为检索块 |
-| 8 | `app/integrations/embedding.py` | 向量化：文本 → Embedding API → 向量 |
-| 9 | `app/integrations/vector_store.py` | 向量存储：向量如何存入 Milvus/本地并检索 |
-| 10 | `app/services/retrieval.py` | 检索服务：稠密/混合检索的完整流程 |
-| 11 | `app/integrations/llm.py` | LLM 调用：将检索结果+问题发给大模型生成答案 |
-| 12 | `app/services/qa.py` | 问答服务：串联 检索→判断→生成 的完整链路 |
-
-> 学完这阶段，你能回答：**一份文档上传后经历了什么？一个问题如何得到回答？**
-
-### 第三阶段：扩展功能（按需阅读）
-
-| 功能 | 入口文件 | 关键文件 |
-|------|----------|----------|
-| 飞书机器人 | `app/api/feishu.py` | `app/integrations/feishu_client.py`, `app/integrations/bot_crypto.py` |
-| 企微机器人 | `app/api/wecom.py` | `app/integrations/wecom_client.py` |
-| Dify 集成 | `app/api/dify.py` | 查看如何作为外部知识库被 Dify 调用 |
-| 图片识别 | `app/integrations/image_recognition.py` | PaddleOCR + 多模态双 provider |
-| 质量评测 | `app/services/evaluation.py` | 数据集管理 + Hit@k/MRR 指标计算 |
-| 多轮对话 | `app/api/qa_conversation.py` | 对话持久化 + 历史上下文注入 |
-| 权限系统 | `app/permissions/loader.py` | 可插拔权限检查器接口 |
-| 检索测试 | `app/api/retrieval.py` | 调试用检索接口 |
-| 切分预览 | `app/api/chunking.py` | 预览不同策略的切分效果 |
-| 监控指标 | `app/core/metrics.py` | Prometheus 指标定义 |
-
-### 第四阶段：数据模型
-
-| 文件 | 说明 |
-|------|------|
-| `app/models/` | 所有数据表定义（15 个模型） |
-| `migrations/versions/` | 数据库迁移历史（12+ 个迁移文件） |
-| `app/db/types.py` | 跨数据库兼容类型（UUID/JSON/PK） |
-
-### 第五阶段：前端（可选）
-
-| 文件 | 说明 |
-|------|------|
-| `frontend/src/App.tsx` | 路由定义 |
-| `frontend/src/pages/DocumentsPage.tsx` | 文档管理页 |
-| `frontend/src/pages/QaChatPage.tsx` | 多轮问答页 |
-| `frontend/src/pages/RetrievalPage.tsx` | 检索测试页 |
-| `frontend/src/api.ts` | 所有后端 API 调用函数 |
-
----
-
-## ✨ 功能清单
-
-### 📄 文档处理
-- **10+ 格式支持**：PDF、Word、Excel、PowerPoint、Markdown、HTML、CSV、邮件（EML）、聊天记录、图片（8 种格式）、纯文本；PDF/Word/Excel/HTML/PPTX 可提取内嵌图片
-- **图片识别**：PaddleOCR 文字识别 + 多模态大模型描述（千问 VL），支持表格检测
-- **PDF 深度解析**：自动提取 PDF 中嵌入的图片并识别
-
-### ✂️ 智能切分
-- **6 种切分策略**：固定长度、按结构、表格感知、父子分层、语义、聊天记录
-- **策略预览**：上传前可预览不同策略的切分效果
-- **灵活调参**：每种策略支持独立参数（块大小、重叠量、句数阈值等）
-
-### 🔍 检索模式
-- **稠密检索（dense）**：纯向量语义检索
-- **混合检索（hybrid）**：BM25 关键词 + 向量语义双路召回，alpha 加权融合
-- **Rerank 重排序**：搜索结果二次排序，提升准确率
-- **评测工作台**：构建评测集，量化 Hit@1/3/5、MRR 等指标
-
-### 💬 智能问答
-- **多轮对话**：上下文持久化，支持连续追问
-- **引用溯源**：每个回答附来源片段，可追溯到原文档
-- **证据判断**：自动检测检索结果质量，证据不足时明确告知而非编造
-- **多模型兼容**：OpenAI 兼容协议，支持千问/DeepSeek/GPT 等任意模型
-
-### 🔌 第三方对接
-- **Dify**：作为外部知识库接入，支持多知识库组合
-- **飞书机器人**：消息加解密、事件回调、@ 触发
-- **企业微信机器人**：XML 解析、AES 加解密、主动回复
-- **通用 HTTP API**：任意平台可调用
-
-### 🛡️ 企业特性
-- **知识库分类**：`source_module` 多知识库隔离
-- **可插拔权限**：实现 `PermissionChecker` 接口即可对接企业权限
-- **监控指标**：Prometheus `/metrics` 端点，15 个业务指标
-- **生产级向量库**：支持本地 Milvus / Zilliz Cloud / 内存（开发用）
-- **全链路追踪**：Trace ID 贯穿请求，便于排错
-
----
-
-## 🚀 快速开始
-
-### 前置要求
+### 1. 准备环境
 
 - Python 3.11+
-- PostgreSQL 14+（必需）
-- Redis 6+（必需）
-- Milvus 2.5+ 或 Zilliz Cloud（生产必需，开发可用内存模式）
-- Node.js 18+（前端）
+- Node.js 18+
+- PostgreSQL 14+，或仅用于本地演示的 SQLite
+- 可选：Redis、Milvus、OpenSearch 和模型服务
 
-### 1. 环境准备
+创建虚拟环境并安装后端依赖：
 
-```bash
-# 安装依赖
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-
-# 配置环境变量
-cp .env.example .env
+Copy-Item .env.example .env
 ```
 
-### 2. 配置 `.env`
+Linux 或 macOS 请将激活命令替换为 `source .venv/bin/activate`，复制配置文件替换为 `cp .env.example .env`。
+
+### 2. 配置本地开发环境
+
+编辑 `.env`。以下配置可用于本地演示，数据保存在项目的 `data/` 目录，向量和稀疏索引使用进程内实现：
 
 ```env
-# 数据库（必需）
-POSTGRES_HOST=127.0.0.1
-POSTGRES_PORT=5432
-POSTGRES_DB=oa_rag_poc
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=your_password
+DATABASE_URL=sqlite:///./data/knowledge_base.db
+VECTOR_STORE_PROVIDER=local
+SPARSE_INDEX_PROVIDER=memory
+EMBEDDING_PROVIDER=local
+ALLOW_PROVIDER_FALLBACKS=true
+```
 
-# Redis（必需）
-REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
+创建开发数据库表：
 
-# 向量存储（三选一）
-VECTOR_STORE_PROVIDER=local          # 开发：内存模式（重启丢失）
-# VECTOR_STORE_PROVIDER=milvus       # 生产：本地 Milvus
-# MILVUS_URI=http://localhost:19530
-# VECTOR_STORE_PROVIDER=zilliz       # 云：Zilliz Cloud
-# ZILLIZ_URI=https://xxx.zillizcloud.com
-# ZILLIZ_TOKEN=your_token
+```powershell
+python -c "from app.db.base import Base; from app.db.runtime import get_engine; import app.models; Base.metadata.create_all(get_engine())"
+```
 
-# LLM（问答必需）
-LLM_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
-LLM_API_KEY=sk-your_key
-LLM_MODEL=qwen-plus
+要启用真实语义检索和生成式问答，请在 `.env` 中配置模型服务：
 
-# Embedding（检索必需）
-EMBEDDING_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
-EMBEDDING_API_KEY=sk-your_key
-EMBEDDING_MODEL=text-embedding-v3
+```env
+LLM_API_BASE=https://your-llm-endpoint/v1
+LLM_API_KEY=your-api-key
+LLM_MODEL=your-chat-model
+
+EMBEDDING_API_BASE=https://your-embedding-endpoint/v1
+EMBEDDING_API_KEY=your-api-key
+EMBEDDING_MODEL=your-embedding-model
 EMBEDDING_VECTOR_SIZE=1024
-
-# 图片识别（可选，默认 PaddleOCR）
-IMAGE_RECOGNITION_PROVIDER=multimodal
-MULTIMODAL_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
-MULTIMODAL_API_KEY=sk-your_key
-MULTIMODAL_MODEL=qwen-vl-plus
 ```
 
-### 3. 初始化数据库
+生产环境建议使用 PostgreSQL、Milvus 或 Zilliz、OpenSearch、Redis，并将 `ALLOW_PROVIDER_FALLBACKS` 设为 `false`。完整环境变量见 [`.env.example`](.env.example)。
 
-```bash
-alembic upgrade head
-```
+### 3. 启动服务
 
-### 4. 启动
+在项目根目录启动后端：
 
-```bash
-# 终端 1：后端
+```powershell
 python -m uvicorn app.main:app --host 127.0.0.1 --port 18080 --reload
-
-# 终端 2：前端
-cd frontend && npm install && npm run dev
 ```
 
-| 地址 | 说明 |
-|------|------|
-| http://localhost:5173 | 前端管理台 |
-| http://localhost:18080/docs | Swagger API 文档 |
-| http://localhost:18080/api/v1/health | 健康检查 |
-| http://localhost:18080/api/v1/metrics | Prometheus 指标 |
+新开终端启动前端：
 
-### 5. Docker 部署（可选）
+```powershell
+cd frontend
+npm install
+npm run dev
+```
 
-```bash
-# 启动 Milvus + Prometheus + Grafana
+可访问以下地址：
+
+| 地址 | 用途 |
+| --- | --- |
+| `http://127.0.0.1:5173` | Web 管理界面 |
+| `http://127.0.0.1:18080/docs` | Swagger API 文档 |
+| `http://127.0.0.1:18080/redoc` | ReDoc API 文档 |
+| `http://127.0.0.1:18080/api/v1/health` | 健康检查 |
+| `http://127.0.0.1:18080/api/v1/metrics` | Prometheus 指标 |
+
+## Docker 与部署
+
+根目录的 `docker-compose.yml` 用于启动本地 Milvus、Prometheus 和 Grafana 等基础组件：
+
+```powershell
 docker compose up -d
-
-# Grafana 监控大盘
-# http://localhost:3000 (admin/admin)
 ```
 
----
+它不包含应用、PostgreSQL 和 Redis。集成环境全栈编排位于 `docker-compose.integration.yml`，需要先按照 [`.env.integration.example`](.env.integration.example) 提供模型服务配置。
 
-## 🏗️ 技术架构
+生产环境的 Kubernetes 清单位于 [`deploy/k8s/`](deploy/k8s/)，部署要求、模型服务边界和可用性策略见 [`deploy/k8s/README.md`](deploy/k8s/README.md)。生产环境应使用独立或受管的 PostgreSQL、Redis、Milvus、OpenSearch 和持久化共享存储，不应将本地 Docker Compose 直接用于生产。
 
-```
-┌─────────────────────────────────────────────────────┐
-│                    前端 (React 19 + Vite)             │
-│         文档管理 · 智能问答 · 检索测试 · 评测工作台      │
-└─────────────────┬───────────────────────────────────┘
-                  │ HTTP REST API
-┌─────────────────▼───────────────────────────────────┐
-│                   后端 (FastAPI)                      │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐            │
-│  │ 文档摄取  │ │  检索服务  │ │  问答服务  │            │
-│  │10+解析器  │ │稠密/混合  │ │多轮/单轮  │            │
-│  │6种切分策略│ │Rerank    │ │引用落地  │            │
-│  └──────────┘ └──────────┘ └──────────┘            │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐            │
-│  │ IM 机器人 │ │  权限系统  │ │  评测引擎  │            │
-│  │飞书/企微  │ │可插拔接口 │ │Hit@k/MRR │            │
-│  └──────────┘ └──────────┘ └──────────┘            │
-└─────────────────┬───────────────────────────────────┘
-                  │
-    ┌─────────────┼─────────────┐
-    ▼             ▼             ▼
-┌───────┐  ┌──────────┐  ┌──────────┐
-│PostgreSQL│ │ Milvus    │  │  Redis   │
-│ 元数据   │  │ 向量存储  │  │ 缓存/会话│
-│ 对话记录 │  │ 语义检索  │  │ 去重    │
-└───────┘  └──────────┘  └──────────┘
-```
+## 主要接口
 
----
+所有接口均以 `/api/v1` 为前缀，完整请求和响应定义见 [`docs/API.md`](docs/API.md)。
 
-## 📡 API 概览
+| 模块 | 代表接口 | 说明 |
+| --- | --- | --- |
+| 文档管理 | `POST /documents/upload` | 上传、解析、切分并建立索引 |
+| 检索 | `POST /retrieval/search` | 检索测试 |
+| 检索调试 | `POST /retrieval/debug-search` | 返回召回与融合明细 |
+| 问答 | `POST /qa/answer` | 基于检索结果生成回答 |
+| 可控问答 | `POST /qa/agent-answer` | 证据门控、查询改写与执行轨迹 |
+| 多轮对话 | `POST /qa/conversations/{id}/messages` | 在已创建会话中发送消息 |
+| 评测 | `POST /evaluation/runs` | 运行 Hit@k、MRR 等检索评测 |
+| Dify | `POST /dify/retrieval` | Dify 外部知识库检索接口 |
+| 数据源 | `POST /sources/folder/sync` | 同步白名单目录中的文档 |
+| 运维 | `GET /health`、`GET /metrics` | 健康状态和监控指标 |
 
-所有接口文档：http://localhost:18080/docs
+默认使用标准响应结构：
 
-| 模块 | 端点 | 说明 |
-|------|------|------|
-| 文档管理 | `POST /api/v1/documents/upload` | 上传文档 |
-| 文档管理 | `GET /api/v1/documents` | 文档列表 |
-| 检索 | `POST /api/v1/retrieval/search` | 知识检索 |
-| 检索 | `POST /api/v1/retrieval/debug-search` | 调试检索 |
-| 问答 | `POST /api/v1/qa/answer` | 单次问答 |
-| 受控 Agent | `POST /api/v1/qa/agent-answer` | 证据门控、一次改写重试与执行轨迹 |
-| 多轮对话 | `POST /api/v1/qa/conversations` | 创建对话 |
-| 多轮对话 | `POST /api/v1/qa/conversations/{id}/messages` | 发送消息 |
-| Dify | `POST /api/v1/dify/retrieval` | Dify 外部知识库 |
-| 飞书 | `POST /api/v1/feishu/events` | 飞书事件回调 |
-| 企微 | `POST /api/v1/wecom/callback` | 企微消息回调 |
-| 评测 | `POST /api/v1/evaluation/runs` | 创建评测运行 |
-| 切分 | `POST /api/v1/chunking/preview` | 切分预览 |
-| 系统 | `GET /api/v1/health` | 健康检查 |
-| 监控 | `GET /api/v1/metrics` | Prometheus 指标 |
-
----
-
-## 📂 项目结构
-
-```
-rag-knowledge-system/
-├── app/
-│   ├── api/              # 19 个路由模块
-│   │   ├── documents.py      # 文档 CRUD + 上传
-│   │   ├── retrieval.py      # 检索 + 调试检索
-│   │   ├── qa.py             # 单次问答
-│   │   ├── qa_conversation.py # 多轮对话
-│   │   ├── dify.py           # Dify 集成
-│   │   ├── feishu.py         # 飞书机器人
-│   │   ├── wecom.py          # 企微机器人
-│   │   ├── evaluation.py     # 评测管理
-│   │   ├── chunking.py       # 切分配置
-│   │   ├── health.py         # 健康检查 + 指标
-│   │   └── ...
-│   ├── core/             # 配置 / 错误 / 中间件 / 日志 / 指标
-│   ├── db/               # SQLAlchemy 基类 / 会话 / 类型
-│   ├── ingestion/        # 文档解析器 + 切分引擎
-│   │   ├── parsers/          # 10 种解析器
-│   │   └── chunking.py       # 6 种切分策略
-│   ├── integrations/     # 外部服务集成
-│   │   ├── llm.py            # LLM 调用（OpenAI 兼容）
-│   │   ├── embedding.py      # Embedding 向量化
-│   │   ├── vector_store.py   # Milvus/Zilliz/本地 向量存储
-│   │   ├── image_recognition.py # PaddleOCR + 多模态
-│   │   ├── rerank.py         # 重排序
-│   │   ├── feishu_client.py  # 飞书 SDK
-│   │   └── wecom_client.py   # 企微 SDK
-│   ├── models/           # 15 个 SQLAlchemy 数据模型
-│   ├── permissions/      # 可插拔权限检查器
-│   ├── repositories/     # 数据访问层
-│   ├── retrieval/        # 混合检索 / BM25 / 评分融合
-│   ├── schemas/          # Pydantic 请求/响应模型
-│   └── services/         # 业务逻辑层（18 个服务）
-├── frontend/             # React 19 + Vite + TypeScript
-│   └── src/
-│       ├── pages/            # 7 个页面
-│       ├── components/       # 通用组件
-│       └── api.ts            # 后端 API 调用
-├── migrations/           # Alembic 数据库迁移（14 个文件）
-├── tests/                # 27 个测试文件
-├── scripts/              # 运维脚本
-├── docs/                 # 设计文档 / 接入指南 / 接口契约
-├── grafana-dashboards/   # Grafana 监控大盘
-├── docker-compose.yml    # Milvus + Prometheus + Grafana
-├── prometheus.yml        # Prometheus 采集配置
-├── requirements.txt
-└── .env.example
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "data": {},
+  "trace_id": "trc_xxx"
+}
 ```
 
-第一阶段：架构总览（5 个文件，30 分钟）
+## 配置要点
 
-app/main.py           → 入口：FastAPI 组装中间件、路由、生命周期
-app/api/router.py     → 一眼看清所有功能模块
-app/core/config.py    → 60+ 配置项如何管理
-app/db/base.py        → ORM 基类
-app/db/session.py     → 数据库会话
-第二阶段：核心链路（8 个文件，60 分钟）
+| 配置项 | 作用 |
+| --- | --- |
+| `DATABASE_URL` | SQLAlchemy 数据库连接串；生产建议 PostgreSQL。 |
+| `VECTOR_STORE_PROVIDER` | `local`、`milvus` 或 `zilliz`。 |
+| `SPARSE_INDEX_PROVIDER` | `memory` 或 `opensearch`。 |
+| `RETRIEVAL_STRATEGY` | `dense` 或 `hybrid`。 |
+| `RERANK_ENABLED` | 启用 TEI 或 OpenAI 兼容的重排服务。 |
+| `INGESTION_MODE` | `sync`、`async`；异步任务可通过 Jobs API 查询。 |
+| `EVALUATION_EXECUTION_MODE` | `sync`、`background` 或 `celery`。 |
+| `AUTH_SESSION_ENABLED` | 启用基于会话的认证；启用时必须配置 `AUTH_SESSION_SECRET`。 |
+| `RATE_LIMIT_ENABLED` | 启用 Redis 分布式限流。 |
 
-app/api/documents.py            → 文档上传入口
-app/ingestion/parser_registry.py → 10 种解析器注册
-app/ingestion/chunking.py       → 6 种切分策略
-app/integrations/embedding.py   → 文本 → 向量
-app/integrations/vector_store.py → 向量存入 Milvus
-app/services/retrieval.py       → 检索完整流程
-app/integrations/llm.py         → LLM 生成答案
-app/services/qa.py              → 串联检索→生成
-第三阶段：扩展功能（按需）
-想看 IM 机器人→ app/api/feishu.py，想看评测→ app/services/evaluation.py，想看监控→ app/core/metrics.py。
+不要提交真实的 API Key、数据库密码、机器人凭据或 `.env` 文件。
 
-第四阶段：数据层
-app/models/ 全部 15 个模型 + migrations/versions/ 迁移历史。
+## 测试与构建
 
+```powershell
+# 后端测试
+pytest tests/ -q
 
+# 前端生产构建
+cd frontend
+npm run build
 
-
-
-
-
-
-
-
-
-
-
-
-
----
-
-## 🔧 配置参考
-
-企业部署下的 OpenSearch、Milvus/Zilliz、Celery/Redis、阈值校准和连接池配置见 [企业化升级指南](docs/enterprise_upgrade_guide.md)。
-
-完整配置项见 `.env.example`，以下为关键配置：
-
-| 分类 | 变量 | 默认值 | 说明 |
-|------|------|--------|------|
-| 数据库 | `DATABASE_URL` | — | PostgreSQL 连接串（或分别配 HOST/DB/USER/PASSWORD） |
-| 向量库 | `VECTOR_STORE_PROVIDER` | `local` | `local` / `milvus` / `zilliz` |
-| 向量库 | `MILVUS_URI` | `localhost:19530` | 本地 Milvus 地址 |
-| LLM | `LLM_API_BASE` | — | LLM API 地址（OpenAI 兼容） |
-| LLM | `LLM_MODEL` | — | 模型名称，如 `qwen-plus` |
-| Embedding | `EMBEDDING_API_BASE` | — | Embedding API 地址 |
-| Embedding | `EMBEDDING_MODEL` | — | 如 `text-embedding-v3` |
-| 图片 | `IMAGE_RECOGNITION_PROVIDER` | `paddle_ocr` | `paddle_ocr` / `multimodal` |
-| 图片 | `MULTIMODAL_MODEL` | — | 如 `qwen-vl-plus` |
-| 权限 | `PERMISSION_MODE` | `none` | `none` / `plugin` |
-| Dify | `DIFY_APP_KEY` | — | Dify 接入密钥 |
-| 摄入 | `INGESTION_MODE` | `sync` | `sync` / `async` |
-
----
-
-## 🧪 测试
-
-```bash
-# 全量测试
-pytest tests/ -x -q
-
-# 核心链路测试
-pytest tests/test_retrieval_qa.py -v
-
-# 切分策略测试
-pytest tests/test_chunking_strategies.py -v
-
-# 图片识别测试
-pytest tests/test_image_recognition.py -v
+# 前端代码检查
+npm run lint
 ```
 
----
+测试默认使用独立的 SQLite 数据库和本地存储目录，不会修改开发环境配置。
 
-## 🤝 致谢
+## 文档索引
 
-感谢 [linux.do](https://linux.do) 社区的支持！
+- [运行与开发指南](docs/guides/runtime.md)
+- [API 文档](docs/API.md)
+- [知识库通用查询契约](docs/contracts/knowledge-api.md)
+- [飞书机器人接入](docs/guides/feishu-bot-integration.md)
+- [企业微信机器人接入](docs/guides/wecom-bot-integration.md)
+- [外部集成运行手册](docs/external_integration_runbook.md)
+- [校园生产环境指南](docs/campus-production-guide.md)
+
+## 许可与安全
+
+仓库当前未附带开源许可证。部署前请依据组织的合规要求补充许可证、密钥管理、访问控制、数据分级和审计策略。
