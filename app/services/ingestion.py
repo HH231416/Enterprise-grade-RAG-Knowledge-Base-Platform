@@ -1,13 +1,21 @@
 """文档摄入服务：编排"解析 → 分块 → 向量化索引"的完整生命周期。
 
-核心流程：
+核心流程（普通模式）：
 1. 解析 (Parsing)：根据文件扩展名选择解析器，提取文本块
-2. 分块 (Chunking)：按配置的策略（fixed/structural/table-aware/parent-child/semantic）切分文本
-3. 索引 (Indexing)：将分块文本向量化并存入向量数据库
+2. 分块 (Chunking)：按配置的策略切分文本
+3. 稀疏索引 (Sparse)：写入 BM25 索引
+4. 向量索引 (Indexing)：Embedding + 写入向量数据库
+
+审核模式（Design D：审核与分块解耦）：
+- 待审核文档只执行解析并把解析快照落库，不生成 chunk、不调 Embedding、
+  不建索引——审核是"内容闸门"，审核界面展示的就是最终会进索引的解析文本。
+- 审核通过后创建独立的 publish job：用落库的解析快照按配置的真实策略分块
+  （语义分块此时允许外调 Embedding）→ 稀疏索引 → 稠密向量 → 上线。
 
 状态机：
-  document.status: pending → processing → active / failed
-  job.status:      pending → running → success / failed
+  普通文档：   pending → running → success / failed
+  审核文档摄入：pending → parsing → awaiting_review（无 chunk）
+  审核文档发布：pending → chunking → running → success / failed
 """
 
 # 启用 PEP 563 延迟注解求值，避免循环引用并提升模块导入速度
@@ -24,7 +32,7 @@ from sqlalchemy.orm import Session  # 数据库会话
 from app.core.errors import AppError, ErrorCode  # 自定义异常
 from app.integrations.embedding import EmbeddingProvider
 from app.ingestion.chunking import build_chunks  # 分块构建函数
-from app.ingestion.types import ChunkingOptions   # 分块选项数据类
+from app.ingestion.types import ChunkingOptions, ParsedBlock  # 分块选项、解析块数据类
 from app.ingestion.parser_registry import ParserRegistry  # 解析器注册表（策略模式）
 from app.models.document import Document          # 文档 ORM 模型
 from app.models.document_chunk import DocumentChunk  # 分块 ORM 模型
@@ -64,6 +72,8 @@ class IngestionService:
         job: IngestionJob,
         stale_chunk_ids: list[str],
     ) -> int:
+        # 待审核文档只做解析+分块，延迟稀疏索引和向量化
+        review_pending = document.review_status == "pending"
         document.status = "processing"
         document.parse_status = "running"
         job.status = "running"
@@ -81,60 +91,34 @@ class IngestionService:
                     status_code=422,
                 )
 
+            # 持久化解析结果快照：待审核文档审核阶段不生成 chunk，
+            # 发布时用快照按真实配置策略分块，保证"审核看到的就是进索引的"。
+            document.parsed_blocks = [block.to_dict() for block in parsed_blocks]
+
+            # ── 待审核文档：解析即止，不生成 chunk、不调 Embedding ──
+            # 审核与分块解耦：审核是内容闸门（审解析文本），分块是索引工艺（发布时做）。
+            # 语义分块要外调 Embedding，审核前外发会让审核形同虚设，故整体推迟。
+            if review_pending:
+                self._clear_failed_file_retention(document)
+                document.status = "draft"
+                document.parse_status = "awaiting_review"
+                document.index_status = "pending"
+                job.status = "awaiting_review"
+                job.current_step = "parsing_completed"
+                job.finished_at = datetime.now(UTC)
+                self.session.commit()
+                logger.info("Parsed document %s, awaiting review", document.doc_uuid)
+                return 0
+
+            # ── 普通/自动通过文档：继续分块 + 建索引 ──
             job.current_step = "chunking"
             self.session.commit()
 
-            chunk_options = self._build_chunking_options(document)
-            semantic_embedder = None
-            if chunk_options.strategy.strip().lower() == "semantic":
-                if self.settings is None:
-                    raise AppError(
-                        code=ErrorCode.EMBEDDING_FAILED,
-                        message="semantic chunking requires an embedding provider",
-                        status_code=422,
-                    )
-                provider = EmbeddingProvider(self.settings)
-                semantic_embedder = lambda texts: [result.vector for result in provider.embed_texts(texts)]
-            chunk_payloads = build_chunks(
-                parsed_blocks,
-                options=chunk_options,
-                semantic_embedder=semantic_embedder,
-            )
-            if not chunk_payloads:
-                raise AppError(
-                    code=ErrorCode.CHUNKING_FAILED,
-                    message="chunking produced no chunks",
-                    status_code=422,
-                )
-
-            chunk_models = [
-                DocumentChunk(
-                    chunk_uuid=uuid.uuid4(),
-                    doc_uuid=document.doc_uuid,
-                    chunk_index=payload.chunk_index,
-                    chunk_type=payload.chunk_type,
-                    section_title=payload.section_title,
-                    page_no=payload.page_no,
-                    sheet_name=payload.sheet_name,
-                    row_start=payload.row_start,
-                    row_end=payload.row_end,
-                    token_count=payload.token_count,
-                    char_count=payload.char_count,
-                    chunk_text=payload.chunk_text,
-                    metadata_json=payload.metadata_json,
-                    parent_chunk_uuid=(
-                        uuid.UUID(payload.parent_chunk_uuid) if payload.parent_chunk_uuid else None
-                    ),
-                    chunk_group_uuid=(
-                        uuid.UUID(payload.chunk_group_uuid) if payload.chunk_group_uuid else None
-                    ),
-                    chunk_level=payload.chunk_level,
-                    context_text=payload.context_text,
-                )
-                for payload in chunk_payloads
-            ]
-
+            chunk_models = self._build_chunks_for_document(document, parsed_blocks)
             self.chunks.replace_for_document(document.doc_uuid, chunk_models)
+            self._clear_failed_file_retention(document)
+            self.session.commit()
+
             self.sparse_indexing.replace_document_chunks(
                 document=document,
                 stale_chunk_ids=stale_chunk_ids,
@@ -143,7 +127,6 @@ class IngestionService:
             document.status = "active"
             document.parse_status = "success"
             document.index_status = "pending"
-            self._clear_failed_file_retention(document)
             self.session.commit()
             if self.settings is not None:
                 indexed_count = IndexingService(self.settings, self.session).index_document_with_cleanup(
@@ -229,6 +212,192 @@ class IngestionService:
             job=job,
             stale_chunk_ids=stale_chunk_ids,
         )
+
+    def publish_document(
+        self,
+        *,
+        document: Document,
+        admin_actor: str | None = None,
+    ) -> tuple[IngestionJob, int]:
+        """审核通过后发布文档：按真实策略分块 + 稀疏索引 + Embedding + 向量写入。
+
+        分块用摄入时落库的解析快照，配置的 chunking_strategy（含 semantic）此时生效，
+        因为审核已通过，外调 Embedding 是合法动作。
+        发布成功后 document.status → active, parse_status → success（补上统一可检索条件）。
+        """
+        parsed_blocks = self._load_parsed_blocks(document)
+
+        job = IngestionJob(
+            doc_uuid=document.doc_uuid,
+            job_type="publish",
+            status="running",
+            current_step="chunking",
+            started_at=datetime.now(UTC),
+            created_by=admin_actor,
+        )
+        self.jobs.add(job)
+        self.session.commit()
+        self.session.refresh(job)
+
+        try:
+            # 按文档配置的真实策略分块（此时允许语义分块外调 Embedding）
+            chunks = self._build_chunks_for_document(document, parsed_blocks)
+            self.chunks.replace_for_document(document.doc_uuid, chunks)
+            self.session.commit()
+
+            # 稀疏索引（审核前跳过的步骤）
+            job.current_step = "sparse_indexing"
+            self.session.commit()
+            self.sparse_indexing.replace_document_chunks(
+                document=document,
+                stale_chunk_ids=[],
+                chunks=chunks,
+            )
+            document.index_status = "pending"
+            self.session.commit()
+
+            # Embedding + 向量写入
+            if self.settings is not None:
+                indexed_count = IndexingService(self.settings, self.session).index_document_with_cleanup(
+                    document=document,
+                    job=job,
+                    stale_chunk_ids=[],
+                )
+            else:
+                indexed_count = 0
+                job.status = "success"
+                job.current_step = "sparse_indexing_completed"
+                job.finished_at = datetime.now(UTC)
+                document.index_status = "success"
+                document.status = "active"
+                self.session.commit()
+
+            # 审核流补上 parse_status=success，满足统一可检索条件
+            # （摄入阶段该值为 awaiting_review，发布成功后才算解析成功可检索）
+            document.parse_status = "success"
+            self.session.commit()
+
+            logger.info(
+                "Published document %s with %s chunks / %s vectors",
+                document.doc_uuid,
+                len(chunks),
+                indexed_count,
+            )
+            return job, indexed_count
+        except AppError:
+            self._mark_index_failed(document.doc_uuid, job.job_uuid)
+            raise
+        except Exception as exc:
+            logger.exception("Document publish failed")
+            self._mark_index_failed(document.doc_uuid, job.job_uuid)
+            raise AppError(
+                code=ErrorCode.VECTOR_WRITE_FAILED,
+                message="document publish failed",
+                status_code=422,
+            ) from exc
+
+    def _load_parsed_blocks(self, document: Document) -> list[ParsedBlock]:
+        """获取解析块：优先用摄入时落库的快照，缺失时回退从源文件重新解析。
+
+        快照保证"审核看到的就是分块嵌入的"，且不依赖源文件仍可访问。
+        """
+        snapshot = getattr(document, "parsed_blocks", None)
+        if snapshot:
+            blocks = [ParsedBlock.from_dict(block) for block in snapshot if block]
+            if blocks:
+                return blocks
+        file_path = Path(document.file_path)
+        if not file_path.is_file():
+            raise AppError(
+                code=ErrorCode.DOCUMENT_PARSE_FAILED,
+                message="document file unavailable, parsed snapshot missing",
+                status_code=422,
+            )
+        parsed_blocks = self.parser_registry.parse(document.file_ext, file_path)
+        if not parsed_blocks:
+            raise AppError(
+                code=ErrorCode.DOCUMENT_PARSE_FAILED,
+                message="document parser produced no text blocks",
+                status_code=422,
+            )
+        return parsed_blocks
+
+    def _build_chunks_for_document(
+        self,
+        document: Document,
+        parsed_blocks: list[ParsedBlock],
+    ) -> list[DocumentChunk]:
+        """按文档配置的分块策略构建分块模型。
+
+        语义分块会调用外部 Embedding：普通文档在摄入阶段、审核文档在发布阶段
+        （已通过审核）调用都是合法的。
+        """
+        chunk_options = self._build_chunking_options(document)
+        semantic_embedder = None
+        if chunk_options.strategy.strip().lower() == "semantic":
+            if self.settings is None:
+                raise AppError(
+                    code=ErrorCode.EMBEDDING_FAILED,
+                    message="semantic chunking requires an embedding provider",
+                    status_code=422,
+                )
+            provider = EmbeddingProvider(self.settings)
+            semantic_embedder = lambda texts: [result.vector for result in provider.embed_texts(texts)]
+
+        chunk_payloads = build_chunks(
+            parsed_blocks,
+            options=chunk_options,
+            semantic_embedder=semantic_embedder,
+        )
+        if not chunk_payloads:
+            raise AppError(
+                code=ErrorCode.CHUNKING_FAILED,
+                message="chunking produced no chunks",
+                status_code=422,
+            )
+        return [self._payload_to_chunk_model(document, payload) for payload in chunk_payloads]
+
+    @staticmethod
+    def _payload_to_chunk_model(document: Document, payload) -> DocumentChunk:
+        return DocumentChunk(
+            chunk_uuid=uuid.uuid4(),
+            doc_uuid=document.doc_uuid,
+            chunk_index=payload.chunk_index,
+            chunk_type=payload.chunk_type,
+            section_title=payload.section_title,
+            page_no=payload.page_no,
+            sheet_name=payload.sheet_name,
+            row_start=payload.row_start,
+            row_end=payload.row_end,
+            token_count=payload.token_count,
+            char_count=payload.char_count,
+            chunk_text=payload.chunk_text,
+            metadata_json=payload.metadata_json,
+            parent_chunk_uuid=(
+                uuid.UUID(payload.parent_chunk_uuid) if payload.parent_chunk_uuid else None
+            ),
+            chunk_group_uuid=(
+                uuid.UUID(payload.chunk_group_uuid) if payload.chunk_group_uuid else None
+            ),
+            chunk_level=payload.chunk_level,
+            context_text=payload.context_text,
+        )
+
+    def _mark_index_failed(
+        self,
+        doc_uuid: uuid.UUID,
+        job_uuid: uuid.UUID,
+    ) -> None:
+        self.session.rollback()
+        document = self.documents.get_by_uuid(doc_uuid)
+        job = self.jobs.get_by_uuid(job_uuid)
+        if document is None or job is None:
+            return
+        document.index_status = "failed"
+        job.status = "failed"
+        job.current_step = "failed"
+        job.finished_at = datetime.now(UTC)
+        self.session.commit()
 
     def _mark_failed(
         self,

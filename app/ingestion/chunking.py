@@ -6,7 +6,6 @@
 - table-aware：表格感知分块（按行数/分组/字符数切分表格）
 - parent-child：父子分块（父块保留上下文，子块用于检索）
 - semantic：语义分块（按句子 + 相似度阈值合并）
-- chat：聊天记录分块
 
 核心入口：build_chunks(parsed_blocks, options) → list[ChunkPayload]
 """
@@ -80,7 +79,6 @@ class ChunkingStrategyRegistry:
             "max_chunk_sentences": "int",       # 最大句子数（硬上限）
             "similarity_threshold": "float",    # 语义相似度阈值
         },
-        "chat": {"max_chars": "int", "topic_gap_minutes": "int"},
     }
 
     def list_strategies(self) -> list[dict]:
@@ -139,7 +137,7 @@ def build_chunks(
     elif strategy == "semantic":
         payloads = _build_semantic(parsed_blocks, opts, semantic_embedder=semantic_embedder)
     else:
-        # 兜底：fixed 和 chat 都走固定大小分块（chat 的 topic 切分在其他地方处理）
+        # fixed 策略走固定大小分块。
         payloads = _build_fixed(parsed_blocks, opts, strategy=strategy)
 
     # ---- 后处理：为每个分块统一设置索引和策略标记 ----
@@ -292,6 +290,15 @@ def _extract_structural_sections(blocks: list[ParsedBlock], *, max_chars: int) -
             )
             line_number += len(raw_lines)
             continue
+
+        # 解析器可能已把标题抽离到 block.section_title（如 markdown/docx 解析器，
+        # 标题行不进 text）。若当前块携带章节标题且与当前累积章节不同，视为章节边界，
+        # 防止跨块合并丢失文档结构。
+        if block.section_title and current_heading != block.section_title:
+            if current_lines:
+                flush()
+            if current_heading is None:
+                current_heading = block.section_title
 
         # 逐行处理
         for line in raw_lines:
@@ -788,7 +795,10 @@ def _split_by_size(text: str, max_chars: int, overlap_chars: int) -> list[str]:
     - 例如 size=500, overlap=50 → step=450
     - 每个 chunk 和下一个 chunk 有 50 个字符的重叠
     - 边界保护：size 至少为 1，overlap 不能超过 size-1（防止无限循环）
-    
+    - 冗余尾窗剔除：文本末尾截断产生的窗口若完全落在上一窗口内部
+      （如 size=40, overlap=10 时 90-100 落在 60-100 内），直接跳过，
+      避免向量索引中出现完全重复的子块。
+
     Args:
         text: 待切分文本
         max_chars: 每个分块的最大字符数
@@ -807,11 +817,19 @@ def _split_by_size(text: str, max_chars: int, overlap_chars: int) -> list[str]:
         return [normalized]
     # 滑动窗口切分
     step = size - overlap  # 步长 = 窗口大小 - 重叠大小
-    return [
-        normalized[start : start + size].strip()
-        for start in range(0, len(normalized), step)
-        if normalized[start : start + size].strip()  # 过滤空字符串
-    ]
+    chunks: list[str] = []
+    previous_end = 0
+    for start in range(0, len(normalized), step):
+        end = min(start + size, len(normalized))
+        window = normalized[start:end].strip()
+        if not window:
+            continue  # 过滤空字符串
+        # 跳过完全落在上一窗口内部的尾部窗口（窗口被文本末尾截断时可能出现）
+        if start < previous_end and end <= previous_end:
+            continue
+        chunks.append(window)
+        previous_end = max(previous_end, end)
+    return chunks
 
 
 # ---- Token 数估算 ----

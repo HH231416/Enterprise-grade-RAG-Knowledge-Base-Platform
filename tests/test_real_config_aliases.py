@@ -11,6 +11,8 @@ def test_real_config_aliases_are_accepted(monkeypatch):
     monkeypatch.setenv("ZILLIZ_ENDPOINT", "https://example.zillizcloud.com")
     monkeypatch.setenv("ZILLIZ_TOKEN", "token")
     monkeypatch.setenv("ZILLIZ_COLLECTION_NAME", "alias_collection")
+    # provider 必须显式指定（config 刻意不做静默推断，防止遗留 Zilliz 配置把 local 切到外部库）
+    monkeypatch.setenv("VECTOR_STORE_PROVIDER", "zilliz")
     monkeypatch.setenv("EMBEDDING_BASE_URL", "https://embedding.example.com/v1")
     monkeypatch.setenv("EMBEDDING_API_KEY", "embedding-key")
     monkeypatch.setenv("EMBEDDING_MODEL", "embedding-model")
@@ -42,6 +44,7 @@ def test_blank_real_provider_values_fall_back_to_safe_defaults(monkeypatch):
     monkeypatch.setenv("ZILLIZ_ENDPOINT", " https://example.zillizcloud.com ")
     monkeypatch.setenv("ZILLIZ_TOKEN", " token ")
     monkeypatch.setenv("ZILLIZ_COLLECTION_NAME", "   ")
+    monkeypatch.setenv("VECTOR_STORE_PROVIDER", "zilliz")
     monkeypatch.setenv("EMBEDDING_BASE_URL", " https://embedding.example.com/v1 ")
     monkeypatch.setenv("EMBEDDING_API_KEY", " embedding-key ")
     monkeypatch.setenv("EMBEDDING_MODEL", " embedding-model ")

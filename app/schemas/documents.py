@@ -10,6 +10,7 @@ class DocumentUploadResponse(AppBaseModel):
     doc_uuid: UUID
     job_uuid: UUID
     status: str
+    review_status: str = "approved"
     chunk_count: int | None = None
     execution_mode: str = "sync"
 
@@ -61,9 +62,11 @@ class DocumentListItem(AppBaseModel):
     version: str
     parse_status: str
     index_status: str
+    review_status: str = "approved"
     access_level: str
     owner_dept: str | None
     owner_role: str | None = None
+    created_by: str | None = None
     created_at: datetime
     updated_at: datetime
     file_ext: str = ""

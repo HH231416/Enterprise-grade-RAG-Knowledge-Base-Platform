@@ -9,8 +9,11 @@ qa-outputs/
 node_modules/
 screenshots/
 .kilo/
+.trae/
+.vscode/
 data/
 test_knowledge_docs/
+*.backup
 
 PLAN.md
 docs/progress.md
@@ -24,8 +27,18 @@ docs/reference/
 init.sh
 AGENTS.md
 
-# 个人学习资料
+# Personal study materials and interview notes are not project artifacts.
 学习计划/
 面试题详解/
 学习计划.md
 面试题详解.md
+
+# Local secrets and credential material must never enter version control.
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+credentials.json
+service-account*.json

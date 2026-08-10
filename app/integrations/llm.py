@@ -17,6 +17,33 @@ from app.schemas.retrieval import Citation
 logger = logging.getLogger(__name__)
 
 
+# 思考模式开启时的最大输出预算（思考 + 答案共用，需显著大于普通生成）
+_THINKING_MAX_TOKENS = 8192
+
+# 复杂多跳问题特征词：命中任一则视为可能需要逐步推理
+_MULTI_HOP_MARKERS = (
+    "然后", "接着", "同时", "并且", "以及", "先后", "依次",
+    "关系", "区别", "对比", "比较", "差异", "流程", "步骤", "环节",
+    "为什么", "原因", "是否与",
+    "and then", "difference", "compare", "relationship", "process",
+)
+
+
+def _should_use_thinking(question: str) -> bool:
+    """启发式判断问题是否属于复杂多跳类型，需要开启思考模式。
+
+    规则：
+    1. 长度 >= 60 字 → 大概率包含多个约束条件，值得推理；
+    2. 命中多跳特征词（比较/区别/流程/关系等）→ 需要多步推理。
+    """
+    q = (question or "").strip()
+    if not q:
+        return False
+    if len(q) >= 60:
+        return True
+    return any(marker in q for marker in _MULTI_HOP_MARKERS)
+
+
 @dataclass(slots=True)
 class LlmResult:
     answer: str
@@ -62,6 +89,9 @@ class LlmProvider:
                 "temperature": 0,
                 "max_tokens": 8,
                 "stream": False,
+                # 探针必须关思考：max_tokens=8 会被思考过程耗尽导致 probe 失败
+                "enable_thinking": False,
+                "chat_template_kwargs": {"enable_thinking": False},
             }
             request_url = build_openai_compatible_url(self.settings.llm_api_base, "/chat/completions")
             data = post_json_with_retries(
@@ -90,6 +120,20 @@ class LlmProvider:
             return isinstance(content, str) and bool(content.strip())
         except AppError:
             return False
+
+    def _resolve_thinking(self, question: str) -> bool:
+        """按 LLM_THINKING_MODE 配置解析本次请求是否开启思考模式。
+
+        - off：全程关闭（默认推荐，保证输出确定性与 max_tokens 预算可控）；
+        - on：全程开启（用于调试/压测）；
+        - auto：仅对复杂多跳问题开启（启发式判断）。
+        """
+        mode = getattr(self.settings, "llm_thinking_mode", "auto")
+        if mode == "off":
+            return False
+        if mode == "on":
+            return True
+        return _should_use_thinking(question)
 
     def generate_answer(
         self,
@@ -129,12 +173,21 @@ class LlmProvider:
                 messages.append({"role": h["role"], "content": h["content"]})
         messages.append({"role": "user", "content": user_prompt})
 
+        # 思考模式：普通 RAG 默认关闭，复杂多跳问题按 LLM_THINKING_MODE 配置自动开启
+        thinking = self._resolve_thinking(question)
+        base_max_tokens = generation_options.max_tokens if generation_options else self.settings.llm_max_tokens
+        max_tokens = max(base_max_tokens, _THINKING_MAX_TOKENS) if thinking else base_max_tokens
+
         payload = {
             "model": self.settings.llm_model,
             "messages": messages,
             "temperature": generation_options.temperature if generation_options else self.settings.llm_temperature,
-            "max_tokens": generation_options.max_tokens if generation_options else self.settings.llm_max_tokens,
+            "max_tokens": max_tokens,
             "stream": False,
+            # 顶层字段兼容 Qwen 官方 API / SiliconFlow / DeepInfra；
+            # chat_template_kwargs 兼容 vLLM（vLLM 的 Qwen3 模板按此字段控制思考开关）
+            "enable_thinking": thinking,
+            "chat_template_kwargs": {"enable_thinking": thinking},
         }
         headers = {
             "Authorization": f"Bearer {self.settings.llm_api_key}",
@@ -147,7 +200,8 @@ class LlmProvider:
             url=request_url,
             headers=headers,
             payload=payload,
-            timeout=max(60, self.settings.provider_timeout_seconds),
+            # 思考模式生成的 CoT 长、H20 算力弱，超时要放宽到 180s
+            timeout=max(180 if thinking else 60, self.settings.provider_timeout_seconds),
             error_factory=lambda exc: AppError(
                 code=ErrorCode.LLM_GENERATION_FAILED,
                 message=f"llm provider request failed: {exc}",
@@ -235,6 +289,9 @@ class LlmProvider:
             "temperature": 0,
             "max_tokens": self.settings.agent_query_rewrite_max_tokens,
             "stream": False,
+            # 改写必须关思考：max_tokens=96 远不够思考消耗，且要求严格 JSON
+            "enable_thinking": False,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         headers = {
             "Authorization": f"Bearer {self.settings.llm_api_key}",
@@ -330,6 +387,9 @@ class LlmProvider:
             "temperature": 0,
             "max_tokens": self.settings.answer_judge_max_tokens,
             "stream": False,
+            # 裁判必须关思考：严格 JSON 分数契约，思考输出会破坏解析
+            "enable_thinking": False,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         headers = {
             "Authorization": f"Bearer {self.settings.llm_api_key}",

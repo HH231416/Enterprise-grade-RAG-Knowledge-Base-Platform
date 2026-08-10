@@ -62,6 +62,7 @@ class Document(TimestampMixin, Base):
         Index("idx_documents_owner_dept", "owner_dept"),
         Index("idx_documents_created_at", "created_at"),
         Index("idx_documents_file_hash", "file_hash"),
+        Index("idx_documents_review_status", "review_status"),
     )
 
     id: Mapped[int] = mapped_column(PrimaryKeyBigInt, primary_key=True, autoincrement=True)
@@ -81,6 +82,7 @@ class Document(TimestampMixin, Base):
     file_size: Mapped[int | None] = mapped_column(BigInteger)
     version: Mapped[str] = mapped_column(String(64), nullable=False, default="v1", server_default="v1")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active")
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="approved", server_default="approved")
     parse_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
     index_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", server_default="pending")
     access_level: Mapped[str] = mapped_column(String(64), nullable=False, default="internal", server_default="internal")
@@ -88,6 +90,13 @@ class Document(TimestampMixin, Base):
     owner_role: Mapped[str | None] = mapped_column(String(64))
     tags: Mapped[list] = mapped_column(JsonType, nullable=False, default=list, server_default="[]")
     extra_meta: Mapped[dict] = mapped_column(JsonType, nullable=False, default=dict, server_default="{}")
+    # 解析结果快照（ParsedBlock 列表序列化）。待审核文档在审核阶段不生成 chunk，
+    # 审核通过后发布时用这份快照按配置策略分块，保证"审核看到的就是进索引的"。
+    # 同时使分块预览不依赖源文件仍可访问。
+    parsed_blocks: Mapped[list | None] = mapped_column(JsonType, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(64))
     updated_by: Mapped[str | None] = mapped_column(String(64))
+    reviewed_by: Mapped[str | None] = mapped_column(String(64))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    review_comment: Mapped[str | None] = mapped_column(Text)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     trusted_identity_external_id_headers: str = "X-Identity-External-Id,X-Auth-Subject"
     evaluation_retrieval_user_id: str = "evaluation-service"
     campus_admin_roles: str = "campus_admin,school_admin"
+    upload_requires_auth: bool = False
+    document_review_enabled: bool = False
+    document_upload_allowed_roles: str = ""
 
     database_url: str | None = None
     postgres_host: str | None = None
@@ -86,11 +89,6 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: str | None = None
-    sparse_index_provider: str = "memory"
-    opensearch_url: str | None = None
-    opensearch_username: str | None = None
-    opensearch_password: str | None = None
-    opensearch_index: str = "oa_rag_sparse_chunks"
 
     storage_root: Path = Field(default_factory=lambda: DEFAULT_STORAGE_ROOT)
     raw_data_dir: Path | None = None
@@ -134,8 +132,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("EMBEDDING_MODEL", "embedding_model"),
     )
     embedding_vector_size: int = Field(
-        default=2560,
+        default=4096,
         validation_alias=AliasChoices("EMBEDDING_VECTOR_SIZE", "EMBEDDING_DIM", "embedding_vector_size"),
+        description=(
+            "Embedding 输出向量维度,需与所选模型一致:Qwen3-Embedding-8B=4096,"
+            "0.6B=1024,4B=2560。修改维度必须重建 Milvus Collection 并全量重索引。"
+        ),
     )
     # ------------------------------------------------------------------
     # 本地嵌入模型配置（生产级降级方案，替代 SHA256 确定性哈希）
@@ -192,6 +194,9 @@ class Settings(BaseSettings):
         default=0.1,
         validation_alias=AliasChoices("LLM_TEMPERATURE", "llm_temperature"),
     )
+    # 思考模式:auto=复杂多跳问题自动开启(默认),off=全程关闭,on=全程开启
+    # 普通 RAG 问答务必保持关闭,否则 max_tokens 会被思考过程耗尽
+    llm_thinking_mode: str = "auto"
     answer_judge_enabled: bool = False
     answer_judge_model: str | None = None
     answer_judge_max_tokens: int = 320
@@ -238,6 +243,11 @@ class Settings(BaseSettings):
     rerank_model: str | None = Field(
         default=None,
         validation_alias=AliasChoices("RERANK_MODEL", "rerank_model"),
+    )
+    # 扩召回倍数:Rerank 前从向量库取 top_k × factor 个候选。默认 3;配置 5 时 top_k=5 → 召回 25
+    rerank_recall_factor: int = Field(
+        default=3,
+        validation_alias=AliasChoices("RERANK_RECALL_FACTOR", "rerank_recall_factor"),
     )
 
     # 权限配置
@@ -396,23 +406,6 @@ class Settings(BaseSettings):
         if self.evaluation_execution_mode == "celery" and not self.celery_broker_url:
             raise ValueError("CELERY_BROKER_URL is required when EVALUATION_EXECUTION_MODE=celery.")
 
-        self.sparse_index_provider = self._normalize_text(
-            self.sparse_index_provider,
-            default="memory",
-        ) or "memory"
-        self.sparse_index_provider = self.sparse_index_provider.lower()
-        if self.sparse_index_provider not in {"memory", "opensearch"}:
-            raise ValueError("SPARSE_INDEX_PROVIDER must be memory or opensearch.")
-        self.opensearch_url = self._normalize_text(self.opensearch_url)
-        self.opensearch_username = self._normalize_text(self.opensearch_username)
-        self.opensearch_password = self._normalize_text(self.opensearch_password)
-        self.opensearch_index = self._normalize_text(
-            self.opensearch_index,
-            default="oa_rag_sparse_chunks",
-        ) or "oa_rag_sparse_chunks"
-        if self.sparse_index_provider == "opensearch" and not self.opensearch_url:
-            raise ValueError("OPENSEARCH_URL is required when SPARSE_INDEX_PROVIDER=opensearch.")
-
         if self.db_pool_size <= 0:
             raise ValueError("DB_POOL_SIZE must be greater than 0.")
         if self.db_max_overflow < 0:
@@ -451,6 +444,8 @@ class Settings(BaseSettings):
             raise ValueError("RERANK_MODEL is required when RERANK_ENABLED=true.")
         if self.app_env != "local" and self.rerank_enabled and not self.rerank_api_key:
             raise ValueError("RERANK_API_KEY is required in non-local environments when RERANK_ENABLED=true.")
+        if self.rerank_recall_factor <= 0:
+            raise ValueError("RERANK_RECALL_FACTOR must be greater than 0.")
         self.agent_query_rewrite_mode = self._normalize_text(
             self.agent_query_rewrite_mode,
             default="auto",
@@ -459,6 +454,11 @@ class Settings(BaseSettings):
             raise ValueError("AGENT_QUERY_REWRITE_MODE must be auto, llm, or heuristic.")
         if self.agent_query_rewrite_max_tokens <= 0:
             raise ValueError("AGENT_QUERY_REWRITE_MAX_TOKENS must be greater than 0.")
+        self.llm_thinking_mode = (
+            self._normalize_text(self.llm_thinking_mode, default="auto") or "auto"
+        ).lower()
+        if self.llm_thinking_mode not in {"auto", "off", "on"}:
+            raise ValueError("LLM_THINKING_MODE must be auto, off, or on.")
         self.retrieval_strategy = (
             self._normalize_text(self.retrieval_strategy, default="hybrid") or "hybrid"
         ).lower()

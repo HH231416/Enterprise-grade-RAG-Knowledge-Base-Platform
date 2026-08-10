@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.retrieval.sparse_index import SparseIndexProvider
@@ -11,6 +12,10 @@ from app.retrieval.sparse_index import SparseIndexProvider
 class SparseIndexingService:
     def __init__(self) -> None:
         self.provider = SparseIndexProvider()
+        self.uses_native_milvus_bm25 = get_settings().vector_store_provider.lower() in {
+            "milvus",
+            "zilliz",
+        }
 
     def replace_document_chunks(
         self,
@@ -19,6 +24,10 @@ class SparseIndexingService:
         stale_chunk_ids: list[str],
         chunks: list[DocumentChunk],
     ) -> None:
+        # 稠密向量写入时已携带 chunk_text；Milvus 的 BM25 Function 会在同一
+        # Collection 内生成和维护稀疏向量，不再额外双写一个全文检索服务。
+        if self.uses_native_milvus_bm25:
+            return
         for chunk_id in stale_chunk_ids:
             self.provider.remove_document(chunk_id)
 
@@ -46,10 +55,14 @@ class SparseIndexingService:
             )
 
     def remove_document_chunks(self, chunk_ids: list[str]) -> None:
+        if self.uses_native_milvus_bm25:
+            return
         for chunk_id in chunk_ids:
             self.provider.remove_document(chunk_id)
 
     def rebuild_from_database(self, session: Session) -> int:
+        if self.uses_native_milvus_bm25:
+            return 0
         stmt = (
             select(DocumentChunk, Document)
             .join(Document, Document.doc_uuid == DocumentChunk.doc_uuid)
@@ -84,19 +97,18 @@ class SparseIndexingService:
         return len(rows)
 
     def ensure_database_indexed(self, session: Session) -> None:
-        if self.provider.is_external:
-            # OpenSearch is incrementally updated by ingestion writes. A full
-            # comparison on every query would defeat the purpose of externalizing it.
+        if self.uses_native_milvus_bm25:
             return
         database_chunk_ids = self._database_chunk_ids(session)
         if self.provider.document_ids != database_chunk_ids:
             self.rebuild_from_database(session)
 
     def _database_chunk_ids(self, session: Session) -> set[str]:
+        from app.services.eligibility import DOCUMENT_ELIGIBILITY_CONDITIONS
         stmt = (
             select(DocumentChunk.chunk_uuid)
             .join(Document, Document.doc_uuid == DocumentChunk.doc_uuid)
-            .where(Document.deleted_at.is_(None))
+            .where(*DOCUMENT_ELIGIBILITY_CONDITIONS)
             .where(DocumentChunk.deleted_at.is_(None))
         )
         return {str(chunk_uuid) for chunk_uuid in session.scalars(stmt)}

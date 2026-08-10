@@ -32,6 +32,7 @@ class ChunkingService:
         text: str,
         options: dict | None = None,
     ) -> dict:
+        self._require_strategy(strategy)
         parsed_blocks = [
             ParsedBlock(
                 text=text,
@@ -48,9 +49,21 @@ class ChunkingService:
         strategy: str,
         options: dict | None = None,
     ) -> dict:
+        self._require_strategy(strategy)
         parsed_blocks = self._parse_document_blocks(doc_uuid)
         chunk_payloads = self._build_preview_chunks(parsed_blocks, strategy=strategy, options=options)
         return self._serialize_preview_result(strategy=strategy, chunk_payloads=chunk_payloads)
+
+    def _require_strategy(self, strategy: str) -> None:
+        """校验策略名，把底层 ValueError 转成 422 业务错误（预览入参来自用户）。"""
+        try:
+            self._registry.require(strategy)
+        except ValueError as exc:
+            raise AppError(
+                code=ErrorCode.INVALID_REQUEST,
+                message=str(exc),
+                status_code=422,
+            ) from exc
 
     def get_document_preview_text(
         self,
@@ -148,6 +161,16 @@ class ChunkingService:
                 message="document not found",
                 status_code=404,
             )
+
+        # 优先使用摄入时落库的解析快照：审核看到的就是最终进索引的文本，
+        # 且不依赖源文件仍可访问。
+        snapshot = getattr(document, "parsed_blocks", None)
+        if snapshot:
+            parsed_blocks = [
+                ParsedBlock.from_dict(block) for block in snapshot if block
+            ]
+            if parsed_blocks:
+                return document, parsed_blocks
 
         file_path = Path(document.file_path)
         if not file_path.exists():

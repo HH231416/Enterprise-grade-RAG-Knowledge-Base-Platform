@@ -76,6 +76,7 @@ class IndexingService:
                     {
                         "doc_uuid": str(document.doc_uuid),
                         "chunk_uuid": str(chunk.chunk_uuid),
+                        "chunk_text": chunk.chunk_text,
                         "source_type": document.source_type,
                         "source_module": document.source_module,
                         "file_ext": document.file_ext,

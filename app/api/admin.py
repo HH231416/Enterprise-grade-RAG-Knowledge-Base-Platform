@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_session, get_trace_id, require_admin_actor
+from app.api.deps import get_session, get_settings_dep, get_trace_id, require_admin_actor
+from app.core.config import Settings
 from app.core.responses import success_response
 from app.schemas.admin import (
     AccessPolicyCreateRequest,
@@ -11,6 +15,8 @@ from app.schemas.admin import (
     AccessPolicyUpdateRequest,
     DepartmentCreateRequest,
     DepartmentUpdateRequest,
+    DocumentReviewRequest,
+    DocumentReviewResponse,
     RoleCreateRequest,
     RoleUpdateRequest,
     SystemConfigCreateRequest,
@@ -19,7 +25,10 @@ from app.schemas.admin import (
     UserStatusUpdateRequest,
     UserUpdateRequest,
 )
+from app.repositories.document_review_records import DocumentReviewRecordRepository
 from app.services.admin_management import AdminManagementService
+from app.services.document_management import DocumentManagementService
+from app.services.ingestion import IngestionService
 
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin_actor)])
@@ -302,3 +311,180 @@ def update_user(
 ):
     data = AdminManagementService(session).update_user(user_id, request)
     return success_response(data.model_dump(mode="json"), trace_id)
+
+
+# ── 文档审核 ──────────────────────────────────────────────────────
+# 状态机: pending → approved / rejected
+#         approved → revoked → approved
+#         rejected → pending (重新提交)
+
+
+@router.get("/documents/pending", response_model=dict)
+def list_pending_documents(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    trace_id: str = Depends(get_trace_id),
+    session: Session = Depends(get_session),
+):
+    """列出待审核文档（review_status=pending）"""
+    data = DocumentManagementService(session).list_documents(
+        page=page, page_size=page_size, review_status="pending",
+    )
+    return success_response(data.model_dump(mode="json"), trace_id)
+
+
+@router.post("/documents/{doc_uuid}/approve", response_model=dict)
+def approve_document(
+    doc_uuid: UUID,
+    request: DocumentReviewRequest | None = None,
+    trace_id: str = Depends(get_trace_id),
+    session: Session = Depends(get_session),
+    settings: Settings = Depends(get_settings_dep),
+    admin_actor: str | None = Depends(require_admin_actor),
+):
+    """通过审核：触发索引构建，review_status → approved, status → active"""
+    service = DocumentManagementService(session)
+    review_records = DocumentReviewRecordRepository(session)
+    doc = service.require_document(doc_uuid)
+
+    comment = request.comment if request else None
+
+    # 记录审核历史
+    review_records.add_record(
+        doc_uuid=doc_uuid, action="approved", actor=admin_actor, comment=comment,
+    )
+
+    # 更新文档审核快照
+    doc.review_status = "approved"
+    doc.reviewed_by = admin_actor
+    doc.reviewed_at = datetime.now(UTC)
+    doc.review_comment = comment
+    session.commit()
+
+    # 触发索引构建（稀疏索引 + Embedding + 向量写入）
+    publish_job, vector_count = IngestionService(session, settings).publish_document(
+        document=doc, admin_actor=admin_actor,
+    )
+    session.refresh(doc)
+
+    return success_response(
+        DocumentReviewResponse(
+            doc_uuid=doc_uuid, review_status="approved",
+            message=f"document approved, {vector_count} vectors indexed",
+        ).model_dump(mode="json"),
+        trace_id,
+    )
+
+
+@router.post("/documents/{doc_uuid}/reject", response_model=dict)
+def reject_document(
+    doc_uuid: UUID,
+    request: DocumentReviewRequest | None = None,
+    trace_id: str = Depends(get_trace_id),
+    session: Session = Depends(get_session),
+    admin_actor: str | None = Depends(require_admin_actor),
+):
+    """拒绝文档：标记为 rejected，保留解析快照和文件以便 resubmit"""
+    service = DocumentManagementService(session)
+    review_records = DocumentReviewRecordRepository(session)
+    doc = service.require_document(doc_uuid)
+
+    comment = request.comment if request else None
+    review_records.add_record(
+        doc_uuid=doc_uuid, action="rejected", actor=admin_actor, comment=comment,
+    )
+
+    doc.review_status = "rejected"
+    doc.status = "inactive"
+    doc.reviewed_by = admin_actor
+    doc.reviewed_at = datetime.now(UTC)
+    doc.review_comment = comment
+    session.commit()
+
+    return success_response(
+        DocumentReviewResponse(
+            doc_uuid=doc_uuid, review_status="rejected",
+            message="document rejected",
+        ).model_dump(mode="json"),
+        trace_id,
+    )
+
+
+@router.post("/documents/{doc_uuid}/revoke", response_model=dict)
+def revoke_document(
+    doc_uuid: UUID,
+    request: DocumentReviewRequest | None = None,
+    trace_id: str = Depends(get_trace_id),
+    session: Session = Depends(get_session),
+    admin_actor: str | None = Depends(require_admin_actor),
+):
+    """撤回已发布文档：review_status → revoked，立即下架但不删除文件/分块/向量"""
+    service = DocumentManagementService(session)
+    review_records = DocumentReviewRecordRepository(session)
+    doc = service.require_document(doc_uuid)
+
+    if doc.review_status != "approved":
+        from app.core.errors import AppError, ErrorCode
+        raise AppError(
+            code=ErrorCode.INVALID_REQUEST,
+            message="only approved documents can be revoked",
+            status_code=422,
+        )
+
+    comment = request.comment if request else None
+    review_records.add_record(
+        doc_uuid=doc_uuid, action="revoked", actor=admin_actor, comment=comment,
+    )
+
+    doc.review_status = "revoked"
+    doc.status = "inactive"
+    doc.reviewed_by = admin_actor
+    doc.reviewed_at = datetime.now(UTC)
+    doc.review_comment = comment
+    session.commit()
+
+    return success_response(
+        DocumentReviewResponse(
+            doc_uuid=doc_uuid, review_status="revoked",
+            message="document revoked, removed from retrieval",
+        ).model_dump(mode="json"),
+        trace_id,
+    )
+
+
+@router.post("/documents/{doc_uuid}/resubmit", response_model=dict)
+def resubmit_document(
+    doc_uuid: UUID,
+    trace_id: str = Depends(get_trace_id),
+    session: Session = Depends(get_session),
+    admin_actor: str | None = Depends(require_admin_actor),
+):
+    """重新提交已拒绝文档：review_status → pending"""
+    service = DocumentManagementService(session)
+    review_records = DocumentReviewRecordRepository(session)
+    doc = service.require_document(doc_uuid)
+
+    if doc.review_status not in ("rejected", "revoked"):
+        from app.core.errors import AppError, ErrorCode
+        raise AppError(
+            code=ErrorCode.INVALID_REQUEST,
+            message="only rejected or revoked documents can be resubmitted",
+            status_code=422,
+        )
+
+    review_records.add_record(
+        doc_uuid=doc_uuid, action="resubmitted", actor=admin_actor,
+        comment="resubmitted for review",
+    )
+
+    doc.review_status = "pending"
+    doc.status = "draft"
+    session.commit()
+
+    return success_response(
+        DocumentReviewResponse(
+            doc_uuid=doc_uuid, review_status="pending",
+            message="document resubmitted for review",
+        ).model_dump(mode="json"),
+        trace_id,
+    )

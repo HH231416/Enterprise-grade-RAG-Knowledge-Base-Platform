@@ -1,6 +1,7 @@
 from app.models.auth_session import AuthSession
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
+from app.models.document_review_record import DocumentReviewRecord
 from app.models.evaluation_chunk import EvaluationChunk
 from app.models.evaluation_dataset import EvaluationDataset
 from app.models.evaluation_query import EvaluationQuery
@@ -19,6 +20,7 @@ __all__ = [
     "AuthSession",
     "Document",
     "DocumentChunk",
+    "DocumentReviewRecord",
     "EvaluationChunk",
     "EvaluationDataset",
     "EvaluationQuery",

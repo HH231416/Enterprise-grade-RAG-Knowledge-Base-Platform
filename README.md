@@ -8,9 +8,9 @@
 
 ## 核心能力
 
-- 文档摄入：支持 PDF、Word、Excel、PowerPoint、Markdown、HTML、CSV、邮件、聊天记录、纯文本和常见图片格式；PDF、Word、PowerPoint 可提取内嵌图片。
-- 智能切分：提供固定长度、结构化、表格感知、父子分层、语义和聊天记录等切分策略，并支持切分预览。
-- 多路检索：支持稠密检索、BM25 稀疏检索、混合检索和 Rerank 精排；可选本地内存、Milvus 或 Zilliz 向量存储，以及 OpenSearch 稀疏索引。
+- 文档摄入：支持 PDF、Word、Excel、PowerPoint、Markdown、CSV、纯文本和常见图片格式；PDF、Word、PowerPoint 可提取内嵌图片。
+- 智能切分：提供固定长度、结构化、表格感知、父子分层和语义等切分策略，并支持切分预览。
+- 多路检索：支持稠密检索、BM25 稀疏检索、混合检索和 Rerank 精排；生产环境由同一 Milvus/Zilliz Collection 承载稠密向量、稀疏向量和标量元数据。
 - 可控问答：回答附带来源片段，可配置证据阈值、查询改写和答案质量判定，降低无依据回答风险。
 - 运营管理：包含文档管理、知识库查询、任务状态、评测集与评测运行、数据源同步、系统配置和健康检查。
 - 企业集成：支持 Dify 外部知识库、飞书和企业微信机器人；提供可插拔权限检查、会话认证、链路追踪、限流与 Prometheus 指标。
@@ -24,7 +24,7 @@ React + Vite 管理界面 / Dify / 飞书 / 企业微信 / HTTP 客户端
                               |
       文档解析 -> 切分 -> 向量化 -> 稠密/稀疏检索 -> Rerank -> LLM 回答
                               |
- PostgreSQL / SQLite     Milvus / Zilliz     OpenSearch     Redis
+ PostgreSQL / SQLite     Milvus / Zilliz     Redis
 ```
 
 后端采用 FastAPI、SQLAlchemy 和 Pydantic Settings；前端采用 React、TypeScript 和 Vite。模型服务使用 OpenAI 兼容接口，可对接 vLLM、TEI、Ollama 或云端模型服务。
@@ -54,7 +54,7 @@ tests/             单元、集成与验收测试
 - Python 3.11+
 - Node.js 18+
 - PostgreSQL 14+，或仅用于本地演示的 SQLite
-- 可选：Redis、Milvus、OpenSearch 和模型服务
+- 可选：Redis、Milvus 和模型服务
 
 创建虚拟环境并安装后端依赖：
 
@@ -75,7 +75,6 @@ Linux 或 macOS 请将激活命令替换为 `source .venv/bin/activate`，复制
 ```env
 DATABASE_URL=sqlite:///./data/knowledge_base.db
 VECTOR_STORE_PROVIDER=local
-SPARSE_INDEX_PROVIDER=memory
 EMBEDDING_PROVIDER=local
 ALLOW_PROVIDER_FALLBACKS=true
 ```
@@ -99,7 +98,7 @@ EMBEDDING_MODEL=your-embedding-model
 EMBEDDING_VECTOR_SIZE=1024
 ```
 
-生产环境建议使用 PostgreSQL、Milvus 或 Zilliz、OpenSearch、Redis，并将 `ALLOW_PROVIDER_FALLBACKS` 设为 `false`。完整环境变量见 [`.env.example`](.env.example)。
+生产环境建议使用 PostgreSQL、Milvus 或 Zilliz、Redis，并将 `ALLOW_PROVIDER_FALLBACKS` 设为 `false`。Milvus Collection 应包含稠密字段、BM25 生成的稀疏字段和标量元数据；完整环境变量见 [`.env.example`](.env.example)。
 
 ### 3. 启动服务
 
@@ -137,7 +136,7 @@ docker compose up -d
 
 它不包含应用、PostgreSQL 和 Redis。集成环境全栈编排位于 `docker-compose.integration.yml`，需要先按照 [`.env.integration.example`](.env.integration.example) 提供模型服务配置。
 
-生产环境的 Kubernetes 清单位于 [`deploy/k8s/`](deploy/k8s/)，部署要求、模型服务边界和可用性策略见 [`deploy/k8s/README.md`](deploy/k8s/README.md)。生产环境应使用独立或受管的 PostgreSQL、Redis、Milvus、OpenSearch 和持久化共享存储，不应将本地 Docker Compose 直接用于生产。
+生产环境的 Kubernetes 清单位于 [`deploy/k8s/`](deploy/k8s/)，部署要求、模型服务边界和可用性策略见 [`deploy/k8s/README.md`](deploy/k8s/README.md)。生产环境应使用独立或受管的 PostgreSQL、Redis、Milvus 和持久化共享存储，不应将本地 Docker Compose 直接用于生产。
 
 ## 主要接口
 
@@ -173,7 +172,6 @@ docker compose up -d
 | --- | --- |
 | `DATABASE_URL` | SQLAlchemy 数据库连接串；生产建议 PostgreSQL。 |
 | `VECTOR_STORE_PROVIDER` | `local`、`milvus` 或 `zilliz`。 |
-| `SPARSE_INDEX_PROVIDER` | `memory` 或 `opensearch`。 |
 | `RETRIEVAL_STRATEGY` | `dense` 或 `hybrid`。 |
 | `RERANK_ENABLED` | 启用 TEI 或 OpenAI 兼容的重排服务。 |
 | `INGESTION_MODE` | `sync`、`async`；异步任务可通过 Jobs API 查询。 |

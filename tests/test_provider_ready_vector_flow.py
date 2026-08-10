@@ -35,6 +35,36 @@ def test_local_vector_store_can_search_uploaded_vectors():
     assert hits[0].metadata["chunk_uuid"] == "chunk-1"
 
 
+def test_milvus_sparse_search_uses_native_collection_field(monkeypatch):
+    settings = get_settings().model_copy(
+        update={
+            "vector_store_provider": "milvus",
+            "milvus_uri": "http://milvus.example:19530",
+        }
+    )
+    store = VectorStoreClient(settings)
+    captured = {}
+
+    def fake_sparse_search(**kwargs):
+        captured.update(kwargs)
+        return []
+
+    monkeypatch.setattr(store, "_search_milvus_sparse", fake_sparse_search)
+
+    assert store.supports_native_sparse_search is True
+    assert store.search_sparse(
+        query_text="HR-TRF-2025 调岗",
+        top_k=12,
+        filters={"doc_uuid": ["doc-1"]},
+    ) == []
+    assert captured == {
+        "query_text": "HR-TRF-2025 调岗",
+        "top_k": 12,
+        "filters": {"doc_uuid": ["doc-1"]},
+        "collection_name": None,
+    }
+
+
 def test_zilliz_filter_expression_and_metadata_helpers():
     filters = {
         "doc_uuid": ["doc-1", "doc-2"],

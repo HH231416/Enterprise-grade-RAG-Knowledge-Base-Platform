@@ -14,16 +14,11 @@ def test_default_registry_contains_all_upload_extensions():
 
     assert set(registry.supported_file_types()) == {
         "bmp",
-        "chat.jsonl",
         "csv",
         "docx",
-        "eml",
         "gif",
-        "htm",
-        "html",
         "jpeg",
         "jpg",
-        "jsonl",
         "markdown",
         "md",
         "pdf",

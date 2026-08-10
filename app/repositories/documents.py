@@ -38,6 +38,7 @@ class DocumentRepository:
         source_module: str | None = None,
         parse_status: str | None = None,
         index_status: str | None = None,
+        review_status: str | None = None,
         keyword: str | None = None,
     ) -> tuple[list[Document], int]:
         stmt = select(Document).where(Document.deleted_at.is_(None))
@@ -52,6 +53,8 @@ class DocumentRepository:
             filters.append(Document.parse_status == parse_status)
         if index_status:
             filters.append(Document.index_status == index_status)
+        if review_status:
+            filters.append(Document.review_status == review_status)
         if keyword:
             filters.append(Document.title.ilike(f"%{keyword}%"))
 

@@ -208,3 +208,13 @@ class UserResponse(AppBaseModel):
     updated_by: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class DocumentReviewRequest(AppBaseModel):
+    comment: str | None = None
+
+
+class DocumentReviewResponse(AppBaseModel):
+    doc_uuid: UUID
+    review_status: str
+    message: str

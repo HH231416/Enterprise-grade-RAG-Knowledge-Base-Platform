@@ -139,41 +139,6 @@ services:
       retries: 30                         # 最多等 5 分钟（Milvus 启动较慢）
 
   # ============================================================
-  # OpenSearch 2.17：全文检索引擎
-  # 用途：稀疏向量检索（BM25），作为混合检索的关键词匹配通道
-  # 
-  # 面试点：为什么 RAG 系统需要 OpenSearch？
-  # - 向量检索擅长语义匹配，但关键词精确匹配能力弱
-  # - BM25 算法擅长精确术语匹配（如产品编号、专业术语）
-  # - 混合检索 = 稠密向量检索 + 稀疏关键词检索，互补提升召回率
-  # - OpenSearch 是 Elasticsearch 7.x 的开源分支，API 兼容
-  # ============================================================
-  opensearch:
-    image: opensearchproject/opensearch:2.17.1
-    environment:
-      discovery.type: single-node         # 单节点模式（开发环境）
-      DISABLE_SECURITY_PLUGIN: "true"     # 禁用安全插件（开发环境不需要 TLS/认证）
-      DISABLE_INSTALL_DEMO_CONFIG: "true" # 不安装演示配置
-      OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g  # JVM 堆内存 1GB
-    ulimits:
-      memlock:                            # 锁定内存限制（防止 JVM 堆被 swap 到磁盘）
-        soft: -1                          # -1 = 无限制
-        hard: -1
-      nofile:                             # 打开文件数限制（OpenSearch 需要大量文件描述符）
-        soft: 65536
-        hard: 65536
-    ports:
-      - "9200:9200"                       # REST API 端口
-    volumes:
-      - opensearch_data:/usr/share/opensearch/data  # 持久化索引数据
-    healthcheck:
-      # 检查集群健康状态：/_cluster/health
-      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health >/dev/null"]
-      interval: 10s
-      timeout: 5s
-      retries: 30                         # OpenSearch 启动也较慢
-
-  # ============================================================
   # FastAPI 应用服务（API）
   # 用途：RAG 知识库系统的核心后端服务
   # 
@@ -207,12 +172,8 @@ services:
       VECTOR_STORE_PROVIDER: milvus        # 向量存储提供商
       MILVUS_URI: http://milvus:19530     # Milvus gRPC 地址
       MILVUS_TOKEN: ${MILVUS_TOKEN:-}     # Milvus 认证 Token（空表示无认证）
-      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-oa_rag_chunks}  # Collection 名称
-
-      # ---- 稀疏索引配置（OpenSearch） ----
-      SPARSE_INDEX_PROVIDER: opensearch    # 稀疏向量索引提供商
-      OPENSEARCH_URL: http://opensearch:9200  # OpenSearch REST API 地址
-      OPENSEARCH_INDEX: ${OPENSEARCH_INDEX:-oa_rag_sparse_chunks}  # 索引名称
+      # 一个 Collection 同时保存原文、稠密/稀疏向量和动态标量元数据。
+      MILVUS_COLLECTION: ${MILVUS_COLLECTION:-oa_rag_chunks_v2}
 
       # ---- 评测系统配置 ----
       EVALUATION_EXECUTION_MODE: celery    # 评测任务使用 Celery 异步执行
@@ -266,8 +227,6 @@ services:
         condition: service_healthy         # 等待 Redis 就绪
       milvus:
         condition: service_healthy         # 等待 Milvus 就绪
-      opensearch:
-        condition: service_healthy         # 等待 OpenSearch 就绪
     healthcheck:
       # 调用应用自身健康检查接口 /api/v1/health
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:18080/api/v1/health', timeout=3)"]
@@ -314,5 +273,4 @@ volumes:
   etcd_data:         # etcd 元数据
   minio_data:        # MinIO 对象数据（Milvus 向量索引）
   milvus_data:       # Milvus 运行时数据
-  opensearch_data:   # OpenSearch 索引数据
   app_data:          # 应用数据（上传文档、处理后文件等）

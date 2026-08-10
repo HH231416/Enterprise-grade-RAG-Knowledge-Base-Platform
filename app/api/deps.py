@@ -129,6 +129,53 @@ def require_admin_actor(
     )
 
 
+def require_upload_actor(
+    request: Request,
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+) -> str | None:
+    """文档上传身份校验。
+
+    由 upload_requires_auth 开关控制，默认关闭（向后兼容）。
+    开启后依次尝试 session token → trusted header 获取用户身份。
+    如果 document_upload_allowed_roles 非空，进一步校验用户角色。
+    """
+    if not settings.upload_requires_auth:
+        return None
+
+    user_id = _read_user_id_from_session_token(
+        request=request, settings=settings, session=session
+    )
+    if user_id is None:
+        trusted = get_trusted_header_user_context(
+            request=request, settings=settings, session=session
+        )
+        if trusted is not None:
+            user_id = trusted.user_id
+
+    if user_id is None:
+        raise AppError(
+            code=ErrorCode.AUTHENTICATION_FAILED,
+            message="authentication required for document upload",
+            status_code=401,
+        )
+
+    allowed_roles = settings.document_upload_allowed_roles
+    if allowed_roles:
+        identity = IdentityRepository(session)
+        user = identity.get_user(user_id)
+        user_roles = set(user.roles if user and user.roles else [])
+        required = {r.strip() for r in allowed_roles.split(",") if r.strip()}
+        if not user_roles & required:
+            raise AppError(
+                code=ErrorCode.PERMISSION_DENIED,
+                message="insufficient role for document upload",
+                status_code=403,
+            )
+
+    return user_id
+
+
 def verify_dify_bearer_token(request: Request, settings: Settings = Depends(get_settings_dep)) -> str:
     if not settings.dify_app_key:
         raise AppError(

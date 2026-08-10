@@ -2,7 +2,7 @@
 
 ## 学生查询链路
 
-学生请求固定走 `Hybrid + Rerank`：Milvus 稠密召回与 OpenSearch BM25 稀疏召回各取候选，按 `HYBRID_FUSION_ALPHA` 融合后，调用校园 AI 平台独立部署的 TEI `BAAI/bge-reranker-v2-m3` 服务精排，再交给校园内网 vLLM 生成带引用回答。RAG API 与 Worker 不加载重排模型权重。
+学生请求固定走 `Hybrid + Rerank`：同一个 Milvus Collection 中的 `vector` 稠密字段和由内置 BM25 Function 生成的 `sparse_vector` 字段各取候选，按 `HYBRID_FUSION_ALPHA` 融合后，调用校园 AI 平台独立部署的 TEI `BAAI/bge-reranker-v2-m3` 服务精排，再交给校园内网 vLLM 生成带引用回答。RAG API 与 Worker 不加载重排模型权重。
 
 部署前必须由校园 AI 平台提供 `tei-reranker.ai-platform.svc.cluster.local/rerank` 服务，并在 `rag-system-secrets` 填入其服务令牌。API 和 Worker 通过 `RERANK_ENABLED=true`、`RERANK_PROVIDER=tei` 共同启用该链路；Rerank 服务不可用时，系统保留 Hybrid 融合排序并记录异常，保证学生查询可用。
 
@@ -14,7 +14,7 @@
 
 此目录部署无状态的 API 与评测 Worker。两类 Pod 均可横向扩展：API 使用三副本、滚动更新、PodDisruptionBudget、HPA 与跨可用区分散；评测使用两个 Celery Worker，从 Redis 消费任务。所有 API 和 Worker 共享同一个 ReadWriteMany 存储卷，使上传文件、解析文件和任务重试不会依赖某个 Pod 的本地磁盘。
 
-不要将根目录的 `docker-compose.yml` 用作生产集群。生产环境必须提供独立高可用或受管的 PostgreSQL、Redis、Milvus、OpenSearch，以及持久化的 RWX 存储。它们的地址通过 `rag-system-secrets` 和 `rag-system-config` 注入，应用 Pod 不保存数据库、向量库或消息队列的本地状态。
+不要将根目录的 `docker-compose.yml` 用作生产集群。生产环境必须提供独立高可用或受管的 PostgreSQL、Redis、Milvus，以及持久化的 RWX 存储。它们的地址通过 `rag-system-secrets` 和 `rag-system-config` 注入，应用 Pod 不保存数据库、向量库或消息队列的本地状态。
 
 模型服务也不随 RAG API 镜像部署。生产链路固定为：`RAG API -> 校园内网 vLLM（Qwen）`，以及 `RAG API -> 校园内网 TEI（Embedding）`。在 `secret.example.yaml` 中将 `LLM_API_BASE` 指向 vLLM 的 `/v1` 地址，将 `EMBEDDING_API_BASE` 指向 TEI 的 OpenAI 兼容 `/v1` 地址；两者均通过内网 Service 和服务令牌访问。vLLM/TEI 应由学校 AI 平台单独进行 GPU 调度、扩缩容和模型版本管理。
 

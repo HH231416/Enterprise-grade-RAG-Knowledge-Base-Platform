@@ -31,6 +31,7 @@ from app.integrations.embedding import EmbeddingProvider  # 文本向量化
 from app.integrations.rerank import create_rerank_provider, BaseRerankProvider  # Rerank 精排
 from app.integrations.vector_store import VectorStoreClient  # 向量数据库客户端
 from app.models.document import Document         # 文档 ORM 模型
+from app.services.eligibility import apply_document_eligibility  # 统一可检索条件
 from app.models.document_chunk import DocumentChunk  # 文档块 ORM 模型
 from app.models.retrieval_log import RetrievalLog   # 检索日志 ORM 模型
 from app.permissions.loader import load_permission_checker  # 权限检查器工厂
@@ -238,7 +239,7 @@ class RetrievalService:
         流程：
         1. 确保稀疏索引已构建
         2. 对查询文本做向量嵌入
-        3. 向量数据库 top_k * 3 召回（扩召回）
+        3. 向量数据库 top_k × RERANK_RECALL_FACTOR 召回（扩召回，因子可配置）
         4. 加载对应 chunk 和文档
         5. 计算 BM25 text_score（仅展示用）
         6. 可选 Rerank 精排
@@ -251,10 +252,10 @@ class RetrievalService:
         query_embedding = self.embedding_provider.embed_texts([rewritten_query])[0].vector
         # 构建向量搜索的过滤条件（限定为允许的文档 UUID 列表）
         vector_filters = self._build_vector_filters(request.filters, allowed_documents)
-        # 向量检索：扩召回 3 倍，为后续 Rerank 提供候选池
+        # 向量检索：按 RERANK_RECALL_FACTOR 扩召回，为后续 Rerank 提供候选池
         vector_hits = self.vector_store.search(
             query_embedding=query_embedding,
-            top_k=request.top_k * 3,  # 面试点：为什么 *3？扩大候选集，Rerank 后可选出更优结果
+            top_k=request.top_k * self.settings.rerank_recall_factor,  # 面试点：为什么扩召回？扩大候选集，Rerank 后可选出更优结果
             filters=vector_filters,
         )
         # 从向量命中中提取 chunk_uuid
@@ -268,7 +269,11 @@ class RetrievalService:
         # 计算 BM25 text_score（仅用于展示和调试，不参与排序）
         sparse_scores = {
             hit.chunk_uuid: hit.score
-            for hit in self.sparse_index.search(rewritten_query, top_k=request.top_k * 3)
+            for hit in self._search_sparse(
+                rewritten_query,
+                top_k=request.top_k * self.settings.rerank_recall_factor,
+                filters=vector_filters,
+            )
         }
         ranked = []  # 排序后的候选列表
         for hit in vector_hits:
@@ -334,7 +339,7 @@ class RetrievalService:
         # 存储调试用的稠密命中信息
         self._last_dense_hits_debug = [
             DenseHitDebug(chunk_uuid=str(chunk.chunk_uuid), doc_uuid=str(document.doc_uuid), score=vector_score)
-            for vector_score, _, chunk in ranked[:request.top_k * 3]
+            for vector_score, _, chunk in ranked[: request.top_k * self.settings.rerank_recall_factor]
         ]
         self._last_sparse_hits_debug = []
         self._last_rerank_latency = rerank_latency
@@ -379,8 +384,8 @@ class RetrievalService:
            答：两路召回结果需要先做权限过滤和有效性验证，再传入 HybridRetriever.fuse() 进行 Min-Max 归一化和融合。
 
         流程：
-        1. 稠密路：向量嵌入 → 向量数据库 top_k * 3 召回
-        2. 稀疏路：BM25 索引 top_k * 3 召回
+        1. 稠密路：向量嵌入 → 向量数据库 top_k × RERANK_RECALL_FACTOR 召回
+        2. 稀疏路：BM25 索引 top_k × RERANK_RECALL_FACTOR 召回
         3. 权限过滤两路结果
         4. HybridRetriever.fuse() 融合
         5. 可选 Rerank 精排
@@ -392,11 +397,15 @@ class RetrievalService:
         vector_filters = self._build_vector_filters(request.filters, allowed_documents)
         vector_hits = self.vector_store.search(
             query_embedding=query_embedding,
-            top_k=request.top_k * 3,  # 扩召回 3 倍
+            top_k=request.top_k * self.settings.rerank_recall_factor,  # 按配置因子扩召回
             filters=vector_filters,
         )
         # ── 稀疏路召回 ──
-        sparse_hits = self.sparse_index.search(rewritten_query, top_k=request.top_k * 3)
+        sparse_hits = self._search_sparse(
+            rewritten_query,
+            top_k=request.top_k * self.settings.rerank_recall_factor,
+            filters=vector_filters,
+        )
 
         # ── 合并两路结果的 chunk_uuid，批量加载 chunk ──
         chunk_ids = [hit.metadata.get("chunk_uuid") for hit in vector_hits if hit.metadata.get("chunk_uuid")]
@@ -535,6 +544,30 @@ class RetrievalService:
             hits=citations,
             latency_ms=latency_ms,
         )
+
+    def _search_sparse(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        filters: dict | None = None,
+    ) -> list[_SparseHit]:
+        """生产环境从 Milvus 的 sparse_vector 召回；本地和评测保留内存 BM25。"""
+        if not self.vector_store.supports_native_sparse_search:
+            return self.sparse_index.search(query, top_k=top_k)
+        return [
+            _SparseHit(
+                chunk_uuid=str(hit.metadata.get("chunk_uuid") or hit.vector_id),
+                doc_uuid=str(hit.metadata.get("doc_uuid", "")),
+                score=hit.score,
+                metadata=hit.metadata,
+            )
+            for hit in self.vector_store.search_sparse(
+                query_text=query,
+                top_k=top_k,
+                filters=filters,
+            )
+        ]
 
     # ── rerank ────────────────────────────────────────────────────
 
@@ -679,8 +712,8 @@ class RetrievalService:
         Returns:
             符合条件的 Document 列表
         """
-        # 基础查询：所有未删除的文档
-        stmt = select(Document).where(Document.deleted_at.is_(None))
+        # 基础查询：应用统一可检索条件
+        stmt = apply_document_eligibility(select(Document))
         if filters is not None:
             # 按 source_module 过滤（大小写不敏感）
             if filters.source_module:
@@ -750,9 +783,8 @@ class RetrievalService:
                 logger.warning("Skipping invalid doc_uuid from retrieval index: %s", doc_uuid)
         if not normalized:
             return {}
-        stmt = select(Document).where(
-            Document.doc_uuid.in_(normalized),
-            Document.deleted_at.is_(None),
+        stmt = apply_document_eligibility(
+            select(Document).where(Document.doc_uuid.in_(normalized))
         )
         return {str(document.doc_uuid): document for document in self.session.scalars(stmt)}
 

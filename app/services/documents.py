@@ -22,7 +22,10 @@ from app.sources.upload import UploadSourceConnector
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_EXTENSIONS = {"pdf", "docx", "xlsx", "pptx", "txt", "text", "md", "markdown", "html", "htm", "csv", "eml", "jsonl", "chat.jsonl", "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp"}
+ALLOWED_EXTENSIONS = {
+    "pdf", "docx", "xlsx", "pptx", "txt", "text", "md", "markdown", "csv",
+    "jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp",
+}
 
 
 class DocumentService:
@@ -45,6 +48,7 @@ class DocumentService:
         owner_role: str | None,
         tags: str | None,
         extra_meta: str | None,
+        created_by: str | None = None,
     ) -> tuple[Document, IngestionJob, int | None]:
         source_result = await UploadSourceConnector(file).read()
         source_document = source_result.documents[0]
@@ -62,6 +66,7 @@ class DocumentService:
             owner_role=owner_role,
             tags=parsed_tags,
             extra_meta=parsed_extra_meta,
+            created_by=created_by,
         )
 
     def ingest_source_document(
@@ -77,7 +82,12 @@ class DocumentService:
         owner_role: str | None = None,
         tags: list | None = None,
         extra_meta: dict | None = None,
+        created_by: str | None = None,
     ) -> tuple[Document, IngestionJob, int | None]:
+        access_level = self._validate_access_level(access_level, created_by)
+        review_required = self.settings.document_review_enabled
+        doc_status, doc_review_status = self._resolve_review_state(created_by, review_required)
+
         extension = self._resolve_extension(source_document.file_name)
         if extension not in ALLOWED_EXTENSIONS:
             raise AppError(
@@ -138,7 +148,8 @@ class DocumentService:
             file_hash=file_hash,
             file_size=file_size,
             version=version,
-            status="active",
+            status=doc_status,
+            review_status=doc_review_status,
             parse_status="pending",
             index_status="pending",
             access_level=access_level,
@@ -146,6 +157,7 @@ class DocumentService:
             owner_role=owner_role,
             tags=parsed_tags,
             extra_meta={**source_document.metadata, **parsed_extra_meta},
+            created_by=created_by,
         )
         self.documents.add(document)
 
@@ -164,6 +176,18 @@ class DocumentService:
         self.session.commit()
         self.session.refresh(document)
         self.session.refresh(job)
+
+        # 记录审核提交事件
+        if doc_review_status == "pending":
+            from app.repositories.document_review_records import DocumentReviewRecordRepository
+            DocumentReviewRecordRepository(self.session).add_record(
+                doc_uuid=document.doc_uuid,
+                action="submitted",
+                actor=created_by,
+                comment="document uploaded, awaiting review",
+            )
+            self.session.commit()
+
         logger.info("Created document %s and job %s", document.doc_uuid, job.job_uuid)
         if self.settings.ingestion_mode == "async":
             BackgroundJobRunner.submit_ingest_job(
@@ -205,10 +229,48 @@ class DocumentService:
 
     @staticmethod
     def _resolve_extension(file_name: str) -> str:
-        name_lower = file_name.lower()
-        if name_lower.endswith(".chat.jsonl"):
-            return "chat.jsonl"
         return Path(file_name).suffix.lower().lstrip(".")
+
+    def _validate_access_level(self, access_level: str, created_by: str | None) -> str:
+        """限制非可信用户可声明的 access_level。
+
+        规则：
+        - 未开启身份校验（created_by=None）：不限制，向后兼容
+        - 可信用户（通过 document_upload_allowed_roles 白名单）：不限制
+        - 普通认证用户：禁止设为 public
+        """
+        if created_by is None:
+            return access_level
+        allowed_roles = self.settings.document_upload_allowed_roles
+        if allowed_roles:
+            return access_level  # 已通过角色白名单 → 可信
+        if access_level == "public":
+            raise AppError(
+                code=ErrorCode.INVALID_REQUEST,
+                message="only trusted uploaders can set access_level=public",
+                status_code=422,
+            )
+        return access_level
+
+    def _resolve_review_state(
+        self, created_by: str | None, review_required: bool
+    ) -> tuple[str, str]:
+        """返回 (status, review_status)。
+
+        规则：
+        - review_required=False：全部 auto-approved
+        - review_required=True + created_by=None：向后兼容，auto-approved
+        - review_required=True + 用户通过了角色白名单校验：auto-approved
+        - review_required=True + 普通认证用户（白名单为空）：pending review
+        """
+        if not review_required:
+            return "active", "approved"
+        if created_by is None:
+            return "active", "approved"
+        allowed_roles = self.settings.document_upload_allowed_roles
+        if allowed_roles:
+            return "active", "approved"
+        return "draft", "pending"
 
     @staticmethod
     def _parse_json_object(raw_value: str | None, field_name: str) -> dict:

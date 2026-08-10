@@ -1,7 +1,7 @@
 """Exercise the deployed external stack through the public HTTP API.
 
 The script intentionally avoids FastAPI TestClient and SQLite. It proves a real
-PostgreSQL/Redis/Milvus/OpenSearch/Celery deployment by uploading a document,
+PostgreSQL/Redis/Milvus/Celery deployment by uploading a document,
 running hybrid retrieval, executing a Celery evaluation run, and cleaning up.
 """
 
@@ -175,7 +175,7 @@ def main() -> int:
                 "/api/v1/evaluation/datasets",
                 json={
                     "name": f"external-stack-smoke-{smoke_id}",
-                    "description": "External PostgreSQL/Redis/Milvus/OpenSearch smoke test",
+                    "description": "External PostgreSQL/Redis/Milvus single-store smoke test",
                     "queries": [
                         {
                             "query_text": "调岗申请两级审批",

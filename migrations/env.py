@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.db.base import Base
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
+from app.models.document_review_record import DocumentReviewRecord
 from app.models.ingestion_job import IngestionJob
 from app.models.llm_call_log import LlmCallLog
 from app.models.retrieval_log import RetrievalLog

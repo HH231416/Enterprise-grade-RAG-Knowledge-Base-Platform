@@ -12,8 +12,11 @@
 # 启用 PEP 563 延迟注解求值，避免循环引用并提升模块导入速度
 from __future__ import annotations
 
-import re   # 正则：用于提取改写后的查询
-import time # 计时：记录各阶段耗时
+import logging  # 日志：记录 LLM 降级等异常事件
+import re       # 正则：用于提取改写后的查询
+import time     # 计时：记录各阶段耗时
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy.orm import Session
 
@@ -150,22 +153,37 @@ class QaAgentService:
             result_to_use.hits,
             evidence_threshold=final_threshold,
         ):
-            answer_status = "grounded"
-            answer = self._generate_grounded_answer(
-                question=request.question,
-                citations=result_to_use.hits,
-                generation_options=request.generation_options,
-            )
-            trace.append(
-                AgentTraceStep(
-                    state="answer",
-                    action="generate_grounded_answer",
-                    query=current_query,
-                    hit_count=len(result_to_use.hits),
-                    sufficient_evidence=True,
-                    notes="证据充足，生成带引用回答。",
+            try:
+                answer = self._generate_grounded_answer(
+                    question=request.question,
+                    citations=result_to_use.hits,
+                    generation_options=request.generation_options,
                 )
-            )
+                answer_status = "grounded"
+                trace.append(
+                    AgentTraceStep(
+                        state="answer",
+                        action="generate_grounded_answer",
+                        query=current_query,
+                        hit_count=len(result_to_use.hits),
+                        sufficient_evidence=True,
+                        notes="证据充足，生成带引用回答。",
+                    )
+                )
+            except Exception:
+                logger.exception("LLM generation failed, degrading to evidence-only response")
+                answer_status = "degraded"
+                answer = self._build_degraded_response(result_to_use.hits)
+                trace.append(
+                    AgentTraceStep(
+                        state="answer",
+                        action="degraded_llm_unavailable",
+                        query=current_query,
+                        hit_count=len(result_to_use.hits),
+                        sufficient_evidence=True,
+                        notes="LLM 不可用，降级为仅返回检索证据，拒绝编造。",
+                    )
+                )
         else:
             answer_status = "insufficient_evidence"
             answer = "未找到足够依据，已执行检索和一次改写重试，建议缩小问题范围或补充筛选条件。"
@@ -187,7 +205,7 @@ class QaAgentService:
                 action="complete",
                 query=current_query,
                 hit_count=len(result_to_use.hits),
-                sufficient_evidence=answer_status == "grounded",
+                sufficient_evidence=answer_status in ("grounded", "degraded"),
                 notes="智能体执行结束。",
             )
         )
@@ -355,6 +373,22 @@ class QaAgentService:
             location = citation.section_title or citation.sheet_name or (f"page {citation.page_no}" if citation.page_no else "chunk")
             snippets.append(f"- {citation.title}（{location}，score={citation.score:.3f}）：{citation.snippet}")
         return "基于命中的引用片段，当前可以确认的信息如下：\n" + "\n".join(snippets)
+
+    @staticmethod
+    def _build_degraded_response(citations: list[Citation]) -> str:
+        """LLM 不可用时的降级响应：仅返回检索证据与拒答提示，不拼接为回答格式。
+
+        与 _build_grounded_answer 的关键区别：
+        - _build_grounded_answer 会拼接为"当前可以确认的信息如下"格式，容易被误认为完整回答
+        - 本方法明确声明"无法生成回答"，仅罗列原始证据，用户知道这是未加工的检索结果
+        """
+        if not citations:
+            return "LLM 服务暂时不可用且未检索到相关文档，请稍后重试。"
+        evidence_lines = []
+        for c in citations[:5]:
+            location = c.section_title or c.sheet_name or (f"第{c.page_no}页" if c.page_no else "chunk")
+            evidence_lines.append(f"- {c.title}（{location}）：{c.snippet}")
+        return "LLM 服务暂时不可用，无法生成回答。以下为检索到的相关证据，请参考原文确认：\n" + "\n".join(evidence_lines)
 
     def _record_llm_log(self, llm_result, *, request_type: str = "chat.completions") -> None:
         """记录 LLM 调用日志到数据库。

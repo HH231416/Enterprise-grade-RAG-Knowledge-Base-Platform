@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 # 依赖注入的可调用对象
-from app.api.deps import get_session, get_settings_dep, get_trace_id
+from app.api.deps import get_session, get_settings_dep, get_trace_id, require_upload_actor
 # 全局配置类，用于类型标注和依赖注入
 from app.core.config import Settings
 # Prometheus Counter 指标：统计文档上传成功次数
@@ -49,6 +49,7 @@ def list_documents(
     source_module: str | None = Query(default=None),   # 按业务模块筛选（如 hr、finance）
     parse_status: str | None = Query(default=None),    # 按解析状态筛选（pending/completed/failed）
     index_status: str | None = Query(default=None),    # 按向量索引状态筛选
+    review_status: str | None = Query(default=None),   # 按审核状态筛选（pending/approved/rejected）
     keyword: str | None = Query(default=None),         # 按关键词模糊搜索文档标题/内容
     trace_id: str = Depends(get_trace_id),             # 依赖注入：获取链路追踪 ID
     session: Session = Depends(get_session),           # 依赖注入：获取数据库会话，请求结束后自动关闭
@@ -61,6 +62,7 @@ def list_documents(
         source_module=source_module,
         parse_status=parse_status,
         index_status=index_status,
+        review_status=review_status,
         keyword=keyword,
     )
     # mode="json" 将 UUID→字符串、datetime→ISO 格式，再包装为统一响应结构返回
@@ -90,9 +92,12 @@ def update_document(
     request: DocumentUpdateRequest,           # 请求体：FastAPI 自动反序列化 JSON 为 Pydantic 模型并校验
     trace_id: str = Depends(get_trace_id),    # 依赖注入：链路追踪 ID
     session: Session = Depends(get_session),  # 依赖注入：数据库会话
+    upload_actor: str | None = Depends(require_upload_actor),  # 依赖注入：上传者身份
 ):
-    # 调用服务层更新文档元数据（如标题、标签、访问级别等）
-    data = DocumentManagementService(session).update_document(doc_uuid, request)
+    # 调用服务层更新文档元数据（含所有权校验、字段校验、重新审核触发）
+    data = DocumentManagementService(session).update_document(
+        doc_uuid, request, upload_actor=upload_actor,
+    )
     return success_response(data.model_dump(mode="json"), trace_id)
 
 
@@ -166,6 +171,7 @@ async def upload_document(  # async：文件上传涉及 I/O，避免阻塞事�
     trace_id: str = Depends(get_trace_id),         # 依赖注入：链路追踪 ID
     session: Session = Depends(get_session),       # 依赖注入：数据库会话
     settings: Settings = Depends(get_settings_dep),  # 依赖注入：全局配置单例
+    upload_actor: str | None = Depends(require_upload_actor),  # 依赖注入：上传者身份
 ):
     # 调用文档服务执行完整上传流程：校验→保存文件→创建数据库记录→摄入（同步或异步）
     document, job, chunk_count = await DocumentService(settings, session).upload_document(
@@ -179,12 +185,14 @@ async def upload_document(  # async：文件上传涉及 I/O，避免阻塞事�
         owner_role=owner_role,
         tags=tags,
         extra_meta=extra_meta,
+        created_by=upload_actor,
     )
     # 构造上传响应模型
     data = DocumentUploadResponse(
         doc_uuid=document.doc_uuid,            # 创建的文档 UUID
         job_uuid=job.job_uuid,                 # 后台任务 UUID（客户端可据此轮询进度）
         status=job.status,                     # 任务当前状态
+        review_status=document.review_status,  # 审核状态
         chunk_count=chunk_count,               # 分块数量（同步模式有值，异步为 0）
         execution_mode=settings.ingestion_mode, # 执行模式（sync/async）
     )

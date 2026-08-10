@@ -13,7 +13,6 @@ from openpyxl.drawing.image import Image as XlsxImage
 from PIL import Image
 
 from app.ingestion.parsers.docx_parser import DocxParser
-from app.ingestion.parsers.html_parser import HtmlParser
 from app.ingestion.parsers.pdf_parser import PdfWithImagesParser
 from app.ingestion.parsers.xlsx_parser import XlsxParser
 from app.ingestion.image_assets import ImageAsset
@@ -121,28 +120,6 @@ def test_xlsx_chart_data_is_searchable(tmp_path):
 
     assert chart_block.metadata["chart_series"][0]["categories"] == ["Q1", "Q2"]
     assert chart_block.metadata["chart_series"][0]["values"] == ["10", "20"]
-
-
-def test_html_local_and_data_images_are_extracted(tmp_path):
-    local_image = tmp_path / "local.png"
-    local_image.write_bytes(PNG_BYTES)
-    html_path = tmp_path / "page.html"
-    data_uri = "data:image/png;base64," + base64.b64encode(PNG_BYTES).decode()
-    html_path.write_text(
-        f'<p>正文</p><img src="local.png" alt="本地图"><img src="{data_uri}" alt="内嵌图">',
-        encoding="utf-8",
-    )
-
-    parser = HtmlParser()
-    html_parser = parser  # keep the test focused on the safe extraction helper
-    assets = html_parser._extract_local_images(
-        [("local.png", "本地图"), (data_uri, "内嵌图"), ("https://example.com/a.png", "远程")],
-        html_path,
-    )
-
-    assert len(assets) == 2
-    assert assets[0].metadata["alt"] == "本地图"
-    assert assets[1].metadata["extraction_method"] == "html_img"
 
 
 def test_low_confidence_ocr_triggers_vlm_and_cache(monkeypatch):

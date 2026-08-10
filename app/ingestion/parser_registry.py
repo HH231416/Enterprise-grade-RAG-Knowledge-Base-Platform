@@ -92,11 +92,8 @@ class ParserRegistry:
     def _register_defaults(self) -> None:
         """注册所有内置的文档解析器（PDF、Word、Excel、Markdown 等）。"""
         # 延迟导入各解析器类，避免模块级循环引用
-        from app.ingestion.parsers.chat_parser import ChatParser       # JSONL 聊天记录
         from app.ingestion.parsers.csv_parser import CsvParser         # CSV 表格
         from app.ingestion.parsers.docx_parser import DocxParser       # Word 文档
-        from app.ingestion.parsers.eml_parser import EmlParser         # 邮件
-        from app.ingestion.parsers.html_parser import HtmlParser       # HTML 网页
         from app.ingestion.parsers.image_parser import ImageParser     # 图片（OCR 识别）
         from app.ingestion.parsers.markdown_parser import MarkdownParser  # Markdown
         from app.ingestion.parsers.pdf_parser import PdfWithImagesParser  # PDF + embedded images
@@ -112,10 +109,8 @@ class ParserRegistry:
             (XlsxParser, ("xlsx",)),                                    # Excel
             (TextParser, ("txt", "text")),                              # 纯文本
             (MarkdownParser, ("md", "markdown")),                       # Markdown
-            (HtmlParser, ("html", "htm")),                              # HTML
             (CsvParser, ("csv",)),                                      # CSV
-            (EmlParser, ("eml",)),                                      # 邮件
-            (ChatParser, ("jsonl", "chat.jsonl")),                      # 聊天记录
+            # HTML、EML 与聊天记录摄取暂未纳入校园知识库的数据范围。
             (ImageParser, ("jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp")),  # 图片（8 种格式）
         )
         # 遍历注册表，调用 register 装饰器批量注册

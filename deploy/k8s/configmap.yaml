@@ -12,8 +12,7 @@ data:
   STORAGE_ROOT: /data
   VECTOR_STORE_PROVIDER: milvus
   MILVUS_URI: http://milvus-ha.platform.svc:19530
-  SPARSE_INDEX_PROVIDER: opensearch
-  OPENSEARCH_URL: https://opensearch-ha.platform.svc:9200
+  MILVUS_COLLECTION: oa_rag_chunks_v2
   RATE_LIMIT_ENABLED: "true"
   RATE_LIMIT_REQUESTS: "120"
   RATE_LIMIT_WINDOW_SECONDS: "60"
@@ -37,10 +36,14 @@ data:
   IMAGE_RECOGNITION_PROVIDER: paddle_ocr
   IMAGE_VLM_CONFIDENCE_THRESHOLD: "0.85"
   IMAGE_CACHE_ENABLED: "true"
+  # Gateway 注入可信身份；API 不采信请求体中的 roles/departments。
   PERMISSION_MODE: plugin
   PERMISSION_PLUGIN: app.permissions.campus.CampusPermissionChecker
   RETRIEVAL_AUTHENTICATED_IDENTITY_REQUIRED: "true"
   TRUSTED_IDENTITY_HEADER_ENABLED: "true"
+  TRUSTED_IDENTITY_USER_HEADERS: X-Authenticated-User,X-User-Id
+  TRUSTED_IDENTITY_EXTERNAL_SOURCE_HEADERS: X-Identity-Source,X-Auth-Issuer
+  TRUSTED_IDENTITY_EXTERNAL_ID_HEADERS: X-Identity-External-Id,X-Auth-Subject
   EVALUATION_EXECUTION_MODE: celery
   ANSWER_JUDGE_ENABLED: "true"
   ANSWER_JUDGE_MAX_TOKENS: "320"

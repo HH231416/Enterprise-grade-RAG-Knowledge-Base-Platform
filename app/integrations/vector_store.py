@@ -91,6 +91,29 @@ class VectorStoreClient:
             collection_name=collection_name,
         )
 
+    @property
+    def supports_native_sparse_search(self) -> bool:
+        """远程 Milvus/Zilliz 使用同一 Collection 内的 BM25 稀疏向量。"""
+        return self._provider() in ("milvus", "zilliz")
+
+    def search_sparse(
+        self,
+        *,
+        query_text: str,
+        top_k: int,
+        filters: dict | None = None,
+        collection_name: str | None = None,
+    ) -> list[SearchResult]:
+        """使用 Milvus 内置 BM25 Function 生成的稀疏向量召回候选。"""
+        if not query_text.strip() or not self.supports_native_sparse_search:
+            return []
+        return self._search_milvus_sparse(
+            query_text=query_text,
+            top_k=top_k,
+            filters=filters,
+            collection_name=collection_name,
+        )
+
     def delete_embeddings(
         self,
         *,
@@ -234,6 +257,7 @@ class VectorStoreClient:
             rows.append(
                 {
                     "chunk_uuid": metadata["chunk_uuid"],
+                    "chunk_text": str(metadata.get("chunk_text", "")),
                     "vector": embedding,
                     **metadata,
                 }
@@ -343,24 +367,7 @@ class VectorStoreClient:
                 data=[query_embedding],
                 limit=top_k,
                 filter=self._build_zilliz_filter_expression(filters),
-                output_fields=[
-                    "chunk_uuid",
-                    "doc_uuid",
-                    "run_uuid",
-                    "chunk_index",
-                    "title",
-                    "source_module",
-                    "source_type",
-                    "file_ext",
-                    "version",
-                    "page_no",
-                    "sheet_name",
-                    "section_title",
-                    "access_level",
-                    "owner_dept",
-                    "owner_role",
-                    "updated_at",
-                ],
+                output_fields=self._search_output_fields(),
                 search_params={"metric_type": "COSINE"},
             )
             first_result_set = search_response[0] if search_response else []
@@ -379,6 +386,62 @@ class VectorStoreClient:
             ]
         except Exception as exc:
             logger.warning("Milvus search failed for collection %s: %s", collection, exc)
+            return []
+
+    def _search_milvus_sparse(
+        self,
+        *,
+        query_text: str,
+        top_k: int,
+        filters: dict | None,
+        collection_name: str | None,
+    ) -> list[SearchResult]:
+        t0 = time.perf_counter()
+        provider = self._provider()
+        uri, token, collection = self._get_milvus_config(collection_name=collection_name)
+        if not uri:
+            raise AppError(
+                code=ErrorCode.RETRIEVAL_FAILED,
+                message=f"{provider} provider is not configured",
+                status_code=422,
+            )
+
+        try:
+            from pymilvus import MilvusClient
+        except ImportError as exc:
+            raise AppError(
+                code=ErrorCode.RETRIEVAL_FAILED,
+                message="pymilvus is required for milvus or zilliz provider",
+                status_code=500,
+            ) from exc
+
+        try:
+            client = MilvusClient(uri=uri, token=token)
+            search_response = client.search(
+                collection_name=collection,
+                anns_field="sparse_vector",
+                data=[query_text],
+                limit=top_k,
+                filter=self._build_zilliz_filter_expression(filters),
+                output_fields=self._search_output_fields(),
+                search_params={"metric_type": "BM25"},
+            )
+            first_result_set = search_response[0] if search_response else []
+            vector_store_operations_total.labels(provider=provider, operation="sparse_search").inc()
+            vector_store_operation_duration_seconds.labels(
+                provider=provider, operation="sparse_search"
+            ).observe(time.perf_counter() - t0)
+            return [
+                SearchResult(
+                    vector_id=str(hit.get("id") or hit.get("chunk_uuid")),
+                    score=float(hit.get("distance", 0.0)),
+                    metadata=self._extract_search_metadata(hit),
+                    collection=collection,
+                )
+                for hit in first_result_set
+            ]
+        except Exception as exc:
+            logger.warning("Milvus sparse search failed for collection %s: %s", collection, exc)
             return []
 
     def _provider(self) -> str:
@@ -430,6 +493,16 @@ class VectorStoreClient:
         if client.has_collection(collection_name=collection):
             return
 
+        if self._provider() == "zilliz":
+            raise AppError(
+                code=ErrorCode.VECTOR_WRITE_FAILED,
+                message=(
+                    "Create the Zilliz collection with the BM25 sparse-vector schema before use; "
+                    "automatic collection creation is only supported for self-hosted Milvus."
+                ),
+                status_code=422,
+            )
+
         schema = client.create_schema(auto_id=False, enable_dynamic_field=True)
         schema.add_field(
             field_name="chunk_uuid",
@@ -442,19 +515,72 @@ class VectorStoreClient:
             datatype=data_type_cls.FLOAT_VECTOR,
             dim=self.settings.embedding_vector_size,
         )
+        # Milvus 在写入时根据 chunk_text 自动生成 BM25 稀疏向量；文本、
+        # 稠密向量、稀疏向量及动态标量元数据因此共处一个 Collection。
+        schema.add_field(
+            field_name="chunk_text",
+            datatype=data_type_cls.VARCHAR,
+            max_length=65535,
+        )
+        schema.add_field(
+            field_name="sparse_vector",
+            datatype=data_type_cls.SPARSE_FLOAT_VECTOR,
+        )
+        try:
+            from pymilvus import Function, FunctionType
+        except ImportError as exc:
+            raise AppError(
+                code=ErrorCode.VECTOR_WRITE_FAILED,
+                message="pymilvus with BM25 Function support is required for Milvus hybrid retrieval",
+                status_code=500,
+            ) from exc
+        schema.add_function(
+            Function(
+                name="chunk_text_bm25",
+                input_field_names=["chunk_text"],
+                output_field_names=["sparse_vector"],
+                function_type=FunctionType.BM25,
+            )
+        )
         index_params = client.prepare_index_params()
-        index_type = "IVF_FLAT" if self._provider() == "milvus" else "AUTOINDEX"
+        index_type = "IVF_FLAT"
         index_params.add_index(
             field_name="vector",
             index_type=index_type,
             metric_type="COSINE",
             params={"nlist": 1024} if index_type == "IVF_FLAT" else {},
         )
+        index_params.add_index(
+            field_name="sparse_vector",
+            index_type="SPARSE_INVERTED_INDEX",
+            metric_type="BM25",
+        )
         client.create_collection(
             collection_name=collection,
             schema=schema,
             index_params=index_params,
         )
+
+    @staticmethod
+    def _search_output_fields() -> list[str]:
+        return [
+            "chunk_uuid",
+            "doc_uuid",
+            "run_uuid",
+            "chunk_index",
+            "title",
+            "source_module",
+            "source_type",
+            "file_ext",
+            "version",
+            "page_no",
+            "sheet_name",
+            "section_title",
+            "access_level",
+            "owner_dept",
+            "owner_role",
+            "updated_at",
+        ]
 
     @staticmethod
     def _metadata_matches(metadata: dict, filters: dict) -> bool:
