@@ -517,10 +517,14 @@ class VectorStoreClient:
         )
         # Milvus 在写入时根据 chunk_text 自动生成 BM25 稀疏向量；文本、
         # 稠密向量、稀疏向量及动态标量元数据因此共处一个 Collection。
+        # BM25 全文检索要求输入字段 enable_analyzer=True（缺失会返回空结果），
+        # 并用 jieba 中文分析器分词：与本地/评测 BM25 的 jieba 分词保持一致。
         schema.add_field(
             field_name="chunk_text",
             datatype=data_type_cls.VARCHAR,
             max_length=65535,
+            enable_analyzer=True,
+            analyzer_params={"tokenizer": "jieba", "filter": ["lowercase"]},
         )
         schema.add_field(
             field_name="sparse_vector",

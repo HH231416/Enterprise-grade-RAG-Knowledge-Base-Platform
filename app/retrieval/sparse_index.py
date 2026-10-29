@@ -8,7 +8,6 @@ Function 同时保存原文、稠密向量、稀疏向量和动态标量元数�
 from __future__ import annotations
 
 import math
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from threading import Lock
@@ -131,11 +130,12 @@ class BM25Index:
 
     @staticmethod
     def _tokenize(text: str) -> list[str]:
+        # \u4e0e\u751f\u4ea7 Milvus \u7684 jieba \u5206\u6790\u5668\u4fdd\u6301\u540c\u4e00\u5206\u8bcd\u89c4\u8303\uff1ajieba \u8bcd\u7ea7\u5207\u5206 +
+        # \u5c0f\u5199\u5f52\u4e00\u3002\u4e2d\u82f1\u6587\u6807\u8bc6\u7b26\uff08\u8bfe\u7a0b\u4ee3\u7801\u3001\u6761\u6b3e\u7f16\u53f7\uff09\u90fd\u7531 jieba \u76f4\u63a5\u5207\u51fa\u3002
+        import jieba
+
         normalized = text.lower().strip()
-        cjk_chars = "".join(re.findall(r"[\u4e00-\u9fff]", normalized))
-        cjk_bigrams = [cjk_chars[index : index + 2] for index in range(len(cjk_chars) - 1)]
-        ascii_text = re.sub(r"[\u4e00-\u9fff]", " ", normalized)
-        return cjk_bigrams + re.findall(r"[a-z0-9]+", ascii_text)
+        return [token for token in jieba.cut(normalized) if token.strip()]
 
 
 class SparseIndexProvider:

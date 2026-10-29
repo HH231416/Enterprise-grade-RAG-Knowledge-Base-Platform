@@ -196,18 +196,13 @@ class LocalRerankProvider(BaseRerankProvider):
         return results
 
     @staticmethod
+    @staticmethod
     def _tokenize(text: str) -> list[str]:
-        import re
+        # 与生产 BM25 的 jieba 分析器一致：词级切分 + 小写归一。
+        import jieba
 
         text = text.lower().strip()
-        tokens: list[str] = []
-        cjk_chars = "".join(re.findall(r"[\u4e00-\u9fff]", text))
-        for i in range(len(cjk_chars) - 1):
-            tokens.append(cjk_chars[i : i + 2])
-        ascii_tokens = re.findall(r"[a-z0-9]+", re.sub(r"[\u4e00-\u9fff]", " ", text))
-        tokens.extend(ascii_tokens)
-        return tokens
-
+        return [token for token in jieba.cut(text) if token.strip()]
 
 def create_rerank_provider(settings: Settings) -> BaseRerankProvider:
     """Factory for production TEI and compatible rerank services."""

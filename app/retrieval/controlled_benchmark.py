@@ -135,7 +135,7 @@ def run_controlled_hybrid_benchmark() -> dict:
     ]
     index.build_index(documents)  # 构建索引
     document_ids = {chunk_uuid: doc_uuid for chunk_uuid, doc_uuid, _ in _DOCUMENTS}  # chunk_uuid → doc_uuid 映射
-    hybrid = HybridRetriever(alpha=0.7)  # 混合检索器（稠密权重 0.7）
+    hybrid = HybridRetriever(rrf_k=60)  # 混合检索器（RRF 平滑常数）
 
     details: list[dict] = []               # 每个用例的详细结果
     dense_rankings: list[list[str]] = []   # 每个用例的稠密排序
@@ -184,7 +184,7 @@ def run_controlled_hybrid_benchmark() -> dict:
     return {
         "dataset": "controlled-enterprise-rule-regression-v1",
         "query_count": len(details),
-        "alpha": hybrid.alpha,
+        "rrf_k": hybrid.rrf_k,
         "dense": _metrics(controlled_benchmark_cases(), dense_rankings),    # 稠密指标
         "hybrid": _metrics(controlled_benchmark_cases(), hybrid_rankings),  # 混合指标
         "details": details,

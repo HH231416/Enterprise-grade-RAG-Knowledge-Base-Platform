@@ -58,10 +58,11 @@ def test_tei_reranker_uses_native_contract(monkeypatch):
 
 
 def test_hybrid_preserves_single_candidate_channel_evidence():
-    hits = HybridRetriever(alpha=0.7).fuse(
+    hits = HybridRetriever(rrf_k=60).fuse(
         [DenseHit(chunk_uuid="chunk-1", doc_uuid="doc-1", score=0.4)],
         [SparseHit(chunk_uuid="chunk-1", doc_uuid="doc-1", score=1.2)],
     )
 
     assert len(hits) == 1
-    assert hits[0].fusion_score == 1.0
+    # RRF 下单个候选两路都 rank=1，融合分 = 2/(60+1)，不会被归零丢掉
+    assert hits[0].fusion_score == round(2 / (60 + 1), 6)

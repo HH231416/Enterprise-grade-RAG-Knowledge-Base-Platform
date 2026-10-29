@@ -51,7 +51,11 @@ export function QaChatPage() {
           role: 'assistant',
           content: data.answer,
           citations: data.citations,
-          metadata: data.latency_ms as unknown as Record<string, unknown>,
+          metadata: {
+            ...(data.latency_ms as unknown as Record<string, unknown>),
+            graph_status: data.graph_status,
+            graph_completeness: data.graph_completeness,
+          },
           created_at: new Date().toISOString(),
         },
       ])
@@ -94,15 +98,12 @@ export function QaChatPage() {
             >
               <div className="qa-message-bubble">
                 <div className="qa-message-content">{msg.content}</div>
+                <GraphNotice metadata={msg.metadata} />
                 {msg.citations && msg.citations.length > 0 && (
                   <details className="qa-citations">
                     <summary>引用来源 ({msg.citations.length})</summary>
                     {msg.citations.map((c: Citation, i: number) => (
-                      <div key={i} className="qa-citation-item">
-                        <strong>[{i + 1}] {c.title}</strong>
-                        <span className="muted">模块: {c.source_module} | 分数: {c.score.toFixed(3)}</span>
-                        <p>{c.snippet}</p>
-                      </div>
+                      <CitationItem key={i} citation={c} index={i} />
                     ))}
                   </details>
                 )}
@@ -134,4 +135,87 @@ export function QaChatPage() {
       </form>
     </div>
   )
+}
+
+/** 图证据只作为原文引用的辅助解释，事实以引用原文为准。 */
+function CitationItem({ citation, index }: { citation: Citation; index: number }) {
+  const isGraphOnly = citation.evidence_type === 'graph_relation'
+  const relations = citation.graph_relations ?? []
+  const sources = citation.recall_sources ?? []
+  return (
+    <div className="qa-citation-item">
+      <strong>[{index + 1}] {citation.title}</strong>
+      <span className="muted">
+        模块: {citation.source_module} | 分数: {citation.score.toFixed(3)}
+        {citation.chunk_index != null ? ` | 分块: ${citation.chunk_index}` : ''}
+      </span>
+      {sources.length > 0 && (
+        <span className="muted"> | 召回来源: {sources.join(' + ')}</span>
+      )}
+      {isGraphOnly && (
+        <span className="muted"> | 来源: 图关系命中的原文分块</span>
+      )}
+      <p>{citation.snippet}</p>
+      {relations.length > 0 && (
+        <details className="qa-graph-relations">
+          <summary>关系路径 ({relations.length})</summary>
+          {relations.map((r, i) => (
+            <div key={i} className="qa-graph-relation-item">
+              <code>{r.relation_type}</code>
+              <span>
+                {r.source_entity_name}
+                <span className="muted">（{r.source_entity_type}）</span>
+                {' → '}
+                {r.target_entity_name}
+                <span className="muted">（{r.target_entity_type}）</span>
+              </span>
+              {r.applicability_known ? (
+                <span className="muted"> | 适用条件: {r.applicability}</span>
+              ) : (
+                <span className="muted"> | 适用条件: 原文未说明</span>
+              )}
+            </div>
+          ))}
+        </details>
+      )}
+    </div>
+  )
+}
+
+/** 图检索状态与证据完整性提示。降级与不完整都如实展示，不静默。 */
+function GraphNotice({ metadata }: { metadata: Record<string, unknown> | null }) {
+  if (!metadata) return null
+  const status = metadata.graph_status as string | null | undefined
+  const completeness = metadata.graph_completeness as
+    | { missing_relations?: string[]; unknown_applicability?: boolean }
+    | null
+    | undefined
+  if (!status || status === 'disabled') return null
+
+  if (status === 'unavailable') {
+    return (
+      <div className="qa-graph-notice muted">
+        图关系检索暂不可用，本次回答仅基于文档检索证据。
+      </div>
+    )
+  }
+
+  const missing = completeness?.missing_relations ?? []
+  if (missing.length > 0) {
+    return (
+      <div className="qa-graph-notice warn">
+        证据不完整，缺少关系：{missing.join('、')}。当前不作确定结论。
+        {completeness?.unknown_applicability ? '部分依据的适用条件未知。' : ''}
+      </div>
+    )
+  }
+  if (status === 'ok') {
+    return (
+      <div className="qa-graph-notice">
+        已结合图关系证据（仅公开校园制度与办事指南）。
+        {completeness?.unknown_applicability ? '部分依据的适用条件未知，请以原文条款为准。' : ''}
+      </div>
+    )
+  }
+  return null
 }

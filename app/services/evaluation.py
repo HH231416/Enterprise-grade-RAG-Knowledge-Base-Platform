@@ -864,10 +864,10 @@ class EvaluationService:
                         metadata={"chunk": chunk, "document": document},
                     )
                 )
-            alpha = run.retrieval_params.get("alpha", 0.7) if run.retrieval_params else 0.7
-            if isinstance(alpha, bool) or not isinstance(alpha, (int, float)):
-                raise ValueError("retrieval_params.alpha must be numeric")
-            fused_hits = HybridRetriever(alpha=float(alpha)).fuse(dense_hits, sparse_hits)
+            rrf_k = run.retrieval_params.get("rrf_k", 60.0) if run.retrieval_params else 60.0
+            if isinstance(rrf_k, bool) or not isinstance(rrf_k, (int, float)):
+                raise ValueError("retrieval_params.rrf_k must be numeric")
+            fused_hits = HybridRetriever(rrf_k=float(rrf_k)).fuse(dense_hits, sparse_hits)
             ranked = []
             for hit in fused_hits:
                 chunk = chunks_by_uuid.get(hit.chunk_uuid)

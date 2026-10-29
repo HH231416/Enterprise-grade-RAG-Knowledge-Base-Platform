@@ -128,13 +128,11 @@ npm run dev
 
 ## Docker 与部署
 
-根目录的 `docker-compose.yml` 用于启动本地 Milvus、Prometheus 和 Grafana 等基础组件：
+本地与集成环境使用 [`docker-compose.integration.yml`](docker-compose.integration.yml) 一键启动完整服务栈（PostgreSQL、Redis、etcd、MinIO、Milvus、API、Celery Worker），需要先按照 [`.env.integration.example`](.env.integration.example) 提供模型服务配置：
 
 ```powershell
-docker compose up -d
+docker compose --env-file .env.integration -f docker-compose.integration.yml up -d --build
 ```
-
-它不包含应用、PostgreSQL 和 Redis。集成环境全栈编排位于 `docker-compose.integration.yml`，需要先按照 [`.env.integration.example`](.env.integration.example) 提供模型服务配置。
 
 生产环境的 Kubernetes 清单位于 [`deploy/k8s/`](deploy/k8s/)，部署要求、模型服务边界和可用性策略见 [`deploy/k8s/README.md`](deploy/k8s/README.md)。生产环境应使用独立或受管的 PostgreSQL、Redis、Milvus 和持久化共享存储，不应将本地 Docker Compose 直接用于生产。
 

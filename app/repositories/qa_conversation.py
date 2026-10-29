@@ -12,8 +12,17 @@ class QaConversationRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def create_conversation(self, conversation_id: UUID, title: str = "新对话") -> QaConversation:
-        conv = QaConversation(conversation_id=conversation_id, title=title)
+    def create_conversation(
+        self,
+        conversation_id: UUID,
+        title: str = "新对话",
+        owner_user_id: str | None = None,
+    ) -> QaConversation:
+        conv = QaConversation(
+            conversation_id=conversation_id,
+            title=title,
+            owner_user_id=owner_user_id,
+        )
         self.session.add(conv)
         self.session.flush()
         return conv
@@ -22,8 +31,23 @@ class QaConversationRepository:
         stmt = select(QaConversation).where(QaConversation.conversation_id == conversation_id)
         return self.session.scalar(stmt)
 
-    def list_conversations(self) -> list[QaConversation]:
-        stmt = select(QaConversation).order_by(desc(QaConversation.updated_at))
+    def get_owned_conversation(
+        self,
+        conversation_id: UUID,
+        owner_user_id: str,
+    ) -> QaConversation | None:
+        """按所有者读取会话。无归属的历史会话不会匹配任何 owner_id。"""
+        stmt = select(QaConversation).where(
+            QaConversation.conversation_id == conversation_id,
+            QaConversation.owner_user_id == owner_user_id,
+        )
+        return self.session.scalar(stmt)
+
+    def list_conversations(self, owner_user_id: str | None = None) -> list[QaConversation]:
+        stmt = select(QaConversation)
+        if owner_user_id is not None:
+            stmt = stmt.where(QaConversation.owner_user_id == owner_user_id)
+        stmt = stmt.order_by(desc(QaConversation.updated_at))
         return list(self.session.scalars(stmt).all())
 
     def delete_conversation(self, conversation_id: UUID) -> bool:

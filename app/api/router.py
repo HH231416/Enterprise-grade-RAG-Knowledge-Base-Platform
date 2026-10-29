@@ -5,6 +5,7 @@ from fastapi import APIRouter
 
 # 导入各子模块的路由实例（每个模块内部有自己的 prefix 和 tags）
 from app.api.admin import router as admin_router               # 管理后台接口
+from app.api.admin_graph import router as admin_graph_router   # 图谱构建与批次审核接口
 from app.api.auth import router as auth_router                 # 认证接口
 from app.api.chunking import router as chunking_router         # 分块预览与策略查询
 from app.api.configs import router as configs_router           # 配置管理接口
@@ -28,6 +29,7 @@ api_router = APIRouter()
 # 将各子模块路由逐一注册到聚合路由中
 api_router.include_router(auth_router)            # /auth/*
 api_router.include_router(admin_router)           # /admin/*
+api_router.include_router(admin_graph_router)     # /admin/graph/*
 api_router.include_router(health_router)          # /health/*
 api_router.include_router(configs_router)         # /configs/*
 api_router.include_router(dify_router)            # /dify/*

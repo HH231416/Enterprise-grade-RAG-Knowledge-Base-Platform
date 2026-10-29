@@ -359,7 +359,7 @@ export type DebugSearchDataV2 = DebugSearchData & {
   retrieval_strategy?: string
   dense_hits?: Array<{ chunk_uuid: string; doc_uuid: string; score: number }>
   sparse_hits?: Array<{ chunk_uuid: string; doc_uuid: string; score: number }>
-  fusion_alpha?: number
+  rrf_k?: number
   rerank_enabled?: boolean
   rerank_model?: string | null
   rerank_latency_ms?: number
@@ -446,6 +446,17 @@ export type DocumentListOption = {
 }
 
 // QA Conversations
+export type GraphRelationView = {
+  relation_type: string
+  source_entity_name: string
+  source_entity_type: string
+  target_entity_name: string
+  target_entity_type: string
+  /** 已知适用条件；未知时为 null 且 applicability_known=false */
+  applicability: string | null
+  applicability_known: boolean
+}
+
 export type Citation = {
   chunk_uuid: string
   doc_uuid: string
@@ -457,6 +468,30 @@ export type Citation = {
   page_no: number | null
   sheet_name: string | null
   section_title: string | null
+  /** document = 原有文档检索证据；graph_relation = 由图关系支撑的原文 */
+  evidence_type?: 'document' | 'graph_relation'
+  chunk_index?: number | null
+  /** 完整分块原文；snippet 是 240 字符展示摘要，生成回答使用本字段 */
+  full_text?: string | null
+  /** 召回来源，保留多路命中信息 */
+  recall_sources?: string[]
+  /** 图关系路径，仅作辅助解释；事实以原文引用为准 */
+  graph_relations?: GraphRelationView[]
+  graph_batch_uuid?: string | null
+  graph_rank?: number | null
+}
+
+export type GraphCompletenessInfo = {
+  required_relations: string[]
+  satisfied_relations: string[]
+  missing_relations: string[]
+  is_complete: boolean
+  needs_clarification: boolean
+  unknown_applicability: boolean
+  /** 无法从问题中确定所问事项：不猜测，保守澄清 */
+  subject_uncertain?: boolean
+  target_subject?: string | null
+  candidate_subjects?: string[]
 }
 
 export type ConversationMessage = {
@@ -513,4 +548,76 @@ export type SendMessageData = {
     generation: number
     total: number
   }
+  /** 图增强状态：disabled / empty / ok / unavailable */
+  graph_status?: string | null
+  graph_message?: string | null
+  graph_completeness?: GraphCompletenessInfo | null
+}
+
+// 图谱管理（管理端）
+export type GraphBatchSummary = {
+  batch_uuid: string
+  doc_uuid: string
+  doc_version: string
+  status: string
+  extraction_result: string | null
+  access_scope: string
+  source_fingerprint: string
+  chunk_count: number
+  candidate_count: number
+  approved_count: number
+  rejected_count: number
+  retry_count: number
+  extractor_name: string | null
+  prompt_template_version: string | null
+  error_code: string | null
+  error_message: string | null
+  reviewed_by: string | null
+  reviewed_at: string | null
+  published_at: string | null
+}
+
+export type GraphCandidateItem = {
+  candidate_uuid: string
+  doc_uuid: string
+  chunk_uuid: string
+  chunk_index: number
+  relation_type: string
+  source_entity_name: string
+  source_entity_type: string
+  target_entity_name: string
+  target_entity_type: string
+  evidence_text: string
+  evidence_section: string | null
+  evidence_page_no: number | null
+  applicability: string | null
+  applicability_known: boolean
+  review_status: string
+}
+
+export type GraphBatchDetail = {
+  found: boolean
+  batch: GraphBatchSummary | null
+  candidates: GraphCandidateItem[]
+}
+
+export type GraphDocumentStatus = {
+  doc_uuid: string
+  active_batch_uuid: string | null
+  graph_active: boolean
+  batches: Array<{
+    batch_uuid: string
+    status: string
+    extraction_result: string | null
+    access_scope: string
+    candidate_count: number
+    approved_count: number
+    rejected_count: number
+    retry_count: number
+    error_code: string | null
+    error_message: string | null
+    created_at: string | null
+    reviewed_at: string | null
+    published_at: string | null
+  }>
 }

@@ -161,7 +161,9 @@ class LlmProvider:
             f"[{index}] 标题: {citation.title}\n"
             f"模块: {citation.source_module}\n"
             f"位置: {citation.section_title or citation.sheet_name or citation.page_no or 'chunk'}\n"
-            f"内容: {citation.snippet}"
+            # 优先使用完整分块原文；snippet 是 240 字符展示摘要，
+            # 用摘要生成回答会让模型缺少关系验证所需的原文细节。
+            f"内容: {getattr(citation, 'full_text', None) or citation.snippet}"
             for index, citation in enumerate(citations, start=1)
         )
         user_prompt = f"问题：{question}\n\n引用片段：\n{citation_blocks}\n\n请基于引用作答。"

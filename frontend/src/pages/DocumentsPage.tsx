@@ -14,6 +14,7 @@ import {
   uploadDocument,
 } from '../api'
 import { getChunkingStrategyLabel } from '../chunkingStrategyLabels'
+import { GraphPanel } from '../components/GraphPanel'
 import { FormField, SectionHeader } from '../components/shared'
 import {
   DEFAULT_FIELD_OPTIONS_CONFIG,
@@ -930,6 +931,7 @@ export function DocumentsPage() {
                 </>
               ) : null}
             </dl>
+            <GraphPanel docUuid={selectedDoc.doc_uuid} accessLevel={selectedDoc.access_level} />
           </div>
         </div>
       ) : null}

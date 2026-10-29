@@ -50,6 +50,7 @@ from app.schemas.retrieval import (
 )
 from app.services.sparse_indexing import SparseIndexingService  # 稀疏索引构建服务
 from app.services.identity import IdentityService
+from app.services.permission_fields import document_to_permission_dict  # 权限字段共享构造
 
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ class RetrievalService:
         self.permission_checker = load_permission_checker()  # 权限检查器（插件化）
         self.sparse_index = SparseIndexProvider()           # BM25 稀疏索引
         self.sparse_indexing = SparseIndexingService()      # 稀疏索引构建服务
-        self.hybrid = HybridRetriever(alpha=self.settings.hybrid_fusion_alpha)
+        self.hybrid = HybridRetriever(rrf_k=self.settings.rrf_k)
         self.rerank_provider: BaseRerankProvider | None = None  # Rerank 提供者（延迟初始化）
 
     def search(
@@ -206,7 +207,7 @@ class RetrievalService:
             retrieval_strategy=strategy,     # 检索策略标识
             dense_hits=getattr(self, "_last_dense_hits_debug", []),   # 稠密检索命中详情
             sparse_hits=getattr(self, "_last_sparse_hits_debug", []), # 稀疏检索命中详情
-            fusion_alpha=self.settings.hybrid_fusion_alpha if strategy == "hybrid" else None,
+            rrf_k=self.settings.rrf_k if strategy == "hybrid" else None,
             rerank_enabled=rerank_info[0],   # Rerank 是否启用
             rerank_model=rerank_info[1],     # Rerank 模型名称
             rerank_latency_ms=rerank_info[2],  # Rerank 耗时（毫秒）
@@ -323,7 +324,8 @@ class RetrievalService:
                 page_no=chunk.page_no,
                 sheet_name=chunk.sheet_name,
                 section_title=chunk.section_title,
-                snippet=chunk.chunk_text[:240],  # 截取前 240 字符作为片段
+                snippet=chunk.chunk_text[:240],  # 展示用摘要
+                full_text=chunk.chunk_text,  # 生成回答使用完整原文
                 version=document.version,
                 updated_at=document.updated_at,
                 score=vector_score,       # 最终得分
@@ -331,6 +333,7 @@ class RetrievalService:
                 text_score=sparse_scores.get(str(chunk.chunk_uuid)),  # BM25 得分（仅展示）
                 rerank_score=rerank_scores.get(str(chunk.chunk_uuid), (None, None))[0],
                 pre_rerank_score=rerank_scores.get(str(chunk.chunk_uuid), (None, None))[1],
+                chunk_index=chunk.chunk_index,
                 image_url=f"/api/v1/documents/{document.doc_uuid}/download" if document.file_ext in IMAGE_EXTENSIONS else None,
             )
             for vector_score, document, chunk in top_hits
@@ -374,14 +377,14 @@ class RetrievalService:
         allowed_documents: dict[str, Document] | None,
         started: float,
     ) -> SearchResponseData:
-        """混合检索：稠密 + 稀疏双路召回 + Alpha 加权融合。
+        """混合检索：稠密 + 稀疏双路召回 + RRF 融合。
 
         面试点：
         1. 为什么混合检索比纯稠密好？
            答：稠密检索擅长语义匹配但弱于精确关键词（如工号、产品编码），
            BM25 稀疏检索正好弥补这一点，两者融合后命中率更高。
         2. 为什么要分别构建 dense_hits 和 sparse_hitlist？
-           答：两路召回结果需要先做权限过滤和有效性验证，再传入 HybridRetriever.fuse() 进行 Min-Max 归一化和融合。
+           答：两路召回结果需要先做权限过滤和有效性验证，再传入 HybridRetriever.fuse() 进行 RRF 融合。
 
         流程：
         1. 稠密路：向量嵌入 → 向量数据库 top_k × RERANK_RECALL_FACTOR 召回
@@ -452,8 +455,12 @@ class RetrievalService:
                 metadata={"chunk": chunk, "document": doc},
             ))
 
-        # ── Min-Max 归一化 + Alpha 加权融合 ──
-        fused = self.hybrid.fuse(dense_hits, sparse_hitlist)
+        # ── RRF 融合（只用排名，免疫 Dense/BM25 量纲差异）──
+        # 调试检索可经 strategy_params.rrf_k 按请求覆盖平滑常数；未提供则用全局配置
+        hybrid = self.hybrid
+        if request.strategy_params and request.strategy_params.get("rrf_k") is not None:
+            hybrid = HybridRetriever(rrf_k=float(request.strategy_params["rrf_k"]))
+        fused = hybrid.fuse(dense_hits, sparse_hitlist)
 
         # ── 应用 min_score 过滤并构建排序列表 ──
         ranked = []
@@ -464,7 +471,7 @@ class RetrievalService:
             doc = allowed_documents.get(str(chunk.doc_uuid))
             if doc is None:
                 continue
-            if h.fusion_score < request.min_score:  # 融合得分低于阈值则跳过
+            if h.dense_score is not None and h.dense_score < request.min_score:  # RRF 分不适用，改用 Dense 余弦分过滤；纯 BM25 命中保留
                 continue
             # 存储 (融合得分, 稠密得分, 稀疏得分, 文档, 块)
             ranked.append((h.fusion_score, h.dense_score or 0.0, h.sparse_score or 0.0, doc, chunk))
@@ -501,6 +508,7 @@ class RetrievalService:
                 sheet_name=chunk.sheet_name,
                 section_title=chunk.section_title,
                 snippet=chunk.chunk_text[:240],
+                full_text=chunk.chunk_text,
                 version=document.version,
                 updated_at=document.updated_at,
                 score=final_score,       # 融合得分
@@ -509,6 +517,9 @@ class RetrievalService:
                 sparse_score=sparse_score,  # 稀疏路得分
                 rerank_score=rerank_scores.get(str(chunk.chunk_uuid), (None, None))[0],
                 pre_rerank_score=rerank_scores.get(str(chunk.chunk_uuid), (None, None))[1],
+                # 填充分块序号：图增强检索据此把实体锚点收敛到命中的具体分块，
+                # 而不是整篇文档的全部实体。
+                chunk_index=chunk.chunk_index,
                 image_url=f"/api/v1/documents/{document.doc_uuid}/download" if document.file_ext in IMAGE_EXTENSIONS else None,
             )
             for final_score, dense_score, sparse_score, document, chunk in top_hits
@@ -827,22 +838,14 @@ class RetrievalService:
     def _document_to_dict(document: Document) -> dict:
         """将 Document ORM 对象转换为字典（供权限检查器使用）。
 
+        权限字段由共享函数 document_to_permission_dict 统一构造，
+        历史证据过滤等处复用同一实现，避免两处各自拼装导致语义不一致。
+
         面试点：为什么不直接用 model_dump()？
         答：手动选择字段可以精确控制传给权限检查器的数据，避免泄露敏感信息，
         同时减少序列化开销。
         """
-        return {
-            "doc_uuid": str(document.doc_uuid),
-            "source_module": document.source_module,
-            "source_type": document.source_type,
-            "access_level": document.access_level,
-            "tags": document.tags,
-            "owner_dept": document.owner_dept,
-            "owner_role": document.owner_role,
-            "created_by": document.created_by,
-            "title": document.title,
-            "file_ext": document.file_ext,
-        }
+        return document_to_permission_dict(document)
 
     @staticmethod
     def _rewrite_query(query: str) -> str:

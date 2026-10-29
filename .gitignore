@@ -42,3 +42,10 @@ id_rsa
 id_ed25519
 credentials.json
 service-account*.json
+
+# Local tooling / IDE state and personal artifacts.
+.idea/
+.workbuddy/
+docs/interview.md
+jd_image.png
+RAG/

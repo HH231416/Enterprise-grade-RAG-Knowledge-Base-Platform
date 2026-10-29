@@ -8,6 +8,7 @@ from app.models.evaluation_query import EvaluationQuery
 from app.models.evaluation_result import EvaluationResult
 from app.models.evaluation_run import EvaluationRun
 from app.models.ingestion_job import IngestionJob
+from app.models.graph import GraphActiveBatch, GraphBuildBatch, GraphCandidate
 from app.models.identity import Department, Role, UserAccount, UserDepartment, UserRole
 from app.models.llm_call_log import LlmCallLog
 from app.models.qa_conversation import QaConversation, QaConversationMessage
@@ -26,6 +27,9 @@ __all__ = [
     "EvaluationQuery",
     "EvaluationResult",
     "EvaluationRun",
+    "GraphActiveBatch",
+    "GraphBuildBatch",
+    "GraphCandidate",
     "IngestionJob",
     "Department",
     "Role",

@@ -5,7 +5,7 @@ from uuid import UUID
 
 from app.schemas.common import AppBaseModel
 from app.schemas.qa import GenerationOptions
-from app.schemas.retrieval import Citation
+from app.schemas.retrieval import Citation, GraphCompletenessInfo
 
 
 class MessageResponse(AppBaseModel):
@@ -58,3 +58,7 @@ class SendMessageResponse(AppBaseModel):
     citations: list[Citation]
     matched_documents: list[dict]
     latency_ms: dict
+    # 图增强状态，图功能关闭时为 "disabled"
+    graph_status: str | None = None
+    graph_message: str | None = None
+    graph_completeness: GraphCompletenessInfo | None = None

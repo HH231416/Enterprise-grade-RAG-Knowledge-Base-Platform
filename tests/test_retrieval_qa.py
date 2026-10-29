@@ -360,8 +360,8 @@ def test_search_supports_natural_chinese_query(client, sample_docx_bytes):
     """测试中文自然语言查询支持。
 
     面试点：text_score > 0 说明什么？
-    答：说明 BM25 稀疏检索对中文二元切词后的关键词匹配生效了，
-    证明 CJK bigram tokenization 在正常工作。
+    答：说明 BM25 稀疏检索对 jieba 中文分词后的关键词匹配生效了，
+    证明词级 tokenization 在正常工作。
     """
     import os
     os.environ["INGESTION_MODE"] = "sync"
@@ -616,7 +616,7 @@ def test_evaluation_run_hybrid_uses_isolated_sparse_index(client):
         json={
             "dataset_uuid": dataset_response.json()["data"]["dataset_uuid"],
             "retrieval_strategy": "hybrid",
-            "retrieval_params": {"alpha": 0.7},
+            "retrieval_params": {"rrf_k": 60},
         },
     )
     assert run_response.status_code == 200

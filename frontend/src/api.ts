@@ -414,6 +414,8 @@ import type {
   CreateConversationData,
   ConversationListData,
   ConversationDetail,
+  GraphBatchDetail,
+  GraphDocumentStatus,
   SendMessageData,
 } from './types'
 
@@ -446,4 +448,75 @@ export function sendMessage(conversationId: string, payload: { question: string;
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+}
+
+// Graph RAG (管理端)
+export function createGraphBatch(docUuid: string) {
+  return requestJson<{ batch_uuid: string; created: boolean; status: string; source_fingerprint: string }>(
+    '/admin/graph/batches',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ doc_uuid: docUuid }),
+    },
+  )
+}
+
+export function runGraphExtraction(batchUuid: string) {
+  return requestJson<{
+    batch_uuid: string
+    ran: boolean
+    status: string
+    extraction_result: string | null
+    candidate_count: number
+    rejected_count: number
+    error_code: string | null
+    error_message: string | null
+  }>(`/admin/graph/batches/${batchUuid}/extract`, { method: 'POST' })
+}
+
+export function retryGraphBatch(batchUuid: string) {
+  return requestJson<{
+    batch_uuid: string
+    retried: boolean
+    status: string
+    extraction_result: string | null
+    candidate_count: number
+    error_code: string | null
+    error_message: string | null
+  }>(`/admin/graph/batches/${batchUuid}/retry`, { method: 'POST' })
+}
+
+export function fetchGraphBatch(batchUuid: string) {
+  return requestJson<GraphBatchDetail>(`/admin/graph/batches/${batchUuid}`)
+}
+
+export function approveGraphBatch(batchUuid: string, rejectedCandidateUuids: string[]) {
+  return requestJson<{
+    batch_uuid: string
+    published: boolean
+    status: string
+    approved_count: number
+    rejected_count: number
+    message: string | null
+  }>(`/admin/graph/batches/${batchUuid}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rejected_candidate_uuids: rejectedCandidateUuids }),
+  })
+}
+
+export function publishGraphBatch(batchUuid: string) {
+  return requestJson<{
+    batch_uuid: string
+    published: boolean
+    status: string
+    approved_count: number
+    rejected_count: number
+    message: string | null
+  }>(`/admin/graph/batches/${batchUuid}/publish`, { method: 'POST' })
+}
+
+export function fetchDocumentGraphStatus(docUuid: string) {
+  return requestJson<GraphDocumentStatus>(`/admin/graph/documents/${docUuid}`)
 }

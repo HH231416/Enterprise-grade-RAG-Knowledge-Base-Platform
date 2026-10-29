@@ -16,7 +16,7 @@ export function RetrievalPage() {
   const [debugForm, setDebugForm] = useState({
     query: '',
     strategy: 'hybrid',
-    fusionAlpha: 0.7,
+    rrfK: 60,
     sourceModule: '',
   })
 
@@ -36,7 +36,7 @@ export function RetrievalPage() {
         filters: debugForm.sourceModule ? { source_module: [debugForm.sourceModule] } : undefined,
       }
       if (debugForm.strategy === 'hybrid') {
-        payload.strategy_params = { fusion_alpha: debugForm.fusionAlpha }
+        payload.strategy_params = { rrf_k: debugForm.rrfK }
       }
       const data = await debugSearch(payload as Parameters<typeof debugSearch>[0])
       setDebugData(data)
@@ -84,16 +84,16 @@ export function RetrievalPage() {
             </select>
           </FormField>
           {debugForm.strategy === 'hybrid' && (
-            <FormField label="融合权重 alpha" hint="向量权重（0~1），值越大越偏语义">
+            <FormField label="RRF 平滑常数 k" hint="倒数排名融合常数（>=1），默认 60">
               <input
                 type="range"
-                min="0"
-                max="1"
-                step="0.1"
-                value={debugForm.fusionAlpha}
-                onChange={(e) => setDebugForm((c) => ({ ...c, fusionAlpha: Number(e.target.value) }))}
+                min="1"
+                max="100"
+                step="1"
+                value={debugForm.rrfK}
+                onChange={(e) => setDebugForm((c) => ({ ...c, rrfK: Number(e.target.value) }))}
               />
-              <span style={{ fontSize: 12, color: '#76624f' }}>{debugForm.fusionAlpha}</span>
+              <span style={{ fontSize: 12, color: '#76624f' }}>{debugForm.rrfK}</span>
             </FormField>
           )}
           <div className="span-two strategy-guide-card">

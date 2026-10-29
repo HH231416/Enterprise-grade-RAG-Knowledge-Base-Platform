@@ -40,7 +40,7 @@ export function EvaluationPage() {
     dataset_uuid: '',
     chunking_strategy: 'fixed',
     retrieval_strategy: 'hybrid',
-    fusion_alpha: 0.7,
+    rrf_k: 60,
   })
 
   useEffect(() => {
@@ -113,7 +113,7 @@ export function EvaluationPage() {
         dataset_uuid: runForm.dataset_uuid.trim(),
         chunking_strategy: runForm.chunking_strategy,
         retrieval_strategy: runForm.retrieval_strategy,
-        retrieval_params: runForm.retrieval_strategy === 'hybrid' ? { fusion_alpha: runForm.fusion_alpha } : undefined,
+        retrieval_params: runForm.retrieval_strategy === 'hybrid' ? { rrf_k: runForm.rrf_k } : undefined,
       })
       await refreshRuns(runForm.dataset_uuid.trim())
     } catch (e) {
@@ -259,9 +259,9 @@ export function EvaluationPage() {
                 </select>
               </FormField>
               {runForm.retrieval_strategy === 'hybrid' && (
-                <FormField label="融合权重 alpha">
-                  <input type="range" min="0" max="1" step="0.1" value={runForm.fusion_alpha} onChange={(e) => setRunForm((c) => ({ ...c, fusion_alpha: Number(e.target.value) }))} />
-                  <span style={{ fontSize: 12, color: '#76624f' }}>{runForm.fusion_alpha}</span>
+                <FormField label="RRF 平滑常数 k">
+                  <input type="range" min="1" max="100" step="1" value={runForm.rrf_k} onChange={(e) => setRunForm((c) => ({ ...c, rrf_k: Number(e.target.value) }))} />
+                  <span style={{ fontSize: 12, color: '#76624f' }}>{runForm.rrf_k}</span>
                 </FormField>
               )}
               <div className="span-two form-submit-row">

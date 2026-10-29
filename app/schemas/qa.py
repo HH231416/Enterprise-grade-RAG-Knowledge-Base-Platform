@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from app.schemas.common import AppBaseModel
-from app.schemas.retrieval import Citation, RetrievalFilters, UserContext
+from app.schemas.retrieval import (
+    Citation,
+    GraphCompletenessInfo,
+    RetrievalFilters,
+    UserContext,
+)
 
 
 class GenerationOptions(AppBaseModel):
@@ -36,3 +41,8 @@ class AnswerResponseData(AppBaseModel):
     matched_documents: list[MatchedDocument]
     filters_applied: dict
     latency_ms: LatencyBreakdown
+    # 图增强状态。关闭或无结果时为 None / "disabled" / "empty"，
+    # 与既有接口兼容：不改变既有字段语义。
+    graph_status: str | None = None
+    graph_message: str | None = None
+    graph_completeness: GraphCompletenessInfo | None = None

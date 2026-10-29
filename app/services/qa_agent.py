@@ -15,6 +15,8 @@ from __future__ import annotations
 import logging  # 日志：记录 LLM 降级等异常事件
 import re       # 正则：用于提取改写后的查询
 import time     # 计时：记录各阶段耗时
+from dataclasses import dataclass, field  # 数据类：承载状态机运行上下文
+from enum import Enum                    # 枚举：定义显式状态集合
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,51 @@ from app.schemas.qa_agent import (
 )
 from app.schemas.retrieval import Citation, SearchRequest, SearchResponseData  # 检索相关 Schema
 from app.services.retrieval import RetrievalService  # 检索服务
+
+
+class AgentState(str, Enum):
+    """QA Agent 有限状态机的显式状态集合。
+
+    两条合法路径：
+      证据充分： plan → retrieve → answer → finish
+      证据不足： plan → retrieve → rewrite → retrieve → answer → finish
+                 （改写无变化时 rewrite 直接进入 answer，并记录 skip_rewrite 追踪）
+
+    面试点：为什么把状态收敛成枚举，而不是散落的字符串字面量？
+    答：枚举把"合法状态"约束到一个集合，转移逻辑里写错状态名会在
+    静态检查/测试阶段暴露，而不是运行期产生一个拼写错误的 trace state。
+    """
+    PLAN = "plan"
+    RETRIEVE = "retrieve"
+    REWRITE = "rewrite"
+    ANSWER = "answer"
+    FINISH = "finish"
+
+
+@dataclass
+class _AgentRuntime:
+    """状态机运行上下文：承载跨状态共享的可变状态。
+
+    这是"业务动作层"与"编排层"解耦的关键：
+    - 业务动作（检索/改写/生成/证据门控）是 service 上的纯方法，输入输出确定；
+    - 编排层（状态转移）只负责读写 runtime 字段、决定下一个状态。
+    将来迁图框架时，业务动作方法可直接复用为图节点，只有编排层需要重写。
+    """
+    question: str
+    strategy: str
+    max_rounds: int
+    current_query: str
+    round_index: int = 0                       # 当前检索轮次（从 0 起，改写成功递增）
+    executed_rounds: int = 0                   # 实际执行的检索次数
+    best_result: SearchResponseData | None = None       # 多轮中的最佳检索结果
+    last_retrieval: SearchResponseData | None = None    # 最近一轮检索结果（供改写使用）
+    result_to_use: SearchResponseData | None = None     # 最终用于生成的结果
+    answer: str = ""                           # 最终回答文本
+    answer_status: str = "insufficient_evidence"        # grounded / degraded / insufficient_evidence
+    trace: list[AgentTraceStep] = field(default_factory=list)  # 状态机执行追踪
+    planning_latency: int = 0                  # 规划阶段耗时（毫秒）
+    total_retrieval_latency: int = 0           # 检索阶段累计耗时（毫秒）
+    generation_latency: int = 0                # 生成阶段耗时（毫秒）
 
 
 class QaAgentService:
@@ -61,172 +108,260 @@ class QaAgentService:
         trusted_user_context: bool = False,
         authenticated_identity_required: bool = False,
     ) -> AgentAnswerResponseData:
+        """有界 QA Agent：检索 → 可选改写一次 → 回答。
+
+        状态机执行顺序（显式状态循环，替代原 for/if/break 硬编码）：
+          1. plan：标准化查询，确定检索策略
+          2. retrieve：执行检索 + 证据门控，决定进入改写还是回答
+          3. [rewrite]：证据不足时用 LLM 改写查询，回到检索
+          4. answer：生成 / 降级 / 拒答
+          5. finish：汇总结果，返回响应
+
+        面试点：为什么用状态循环 + handler，而不是把流转写死在 answer 里？
+        答：把"编排"（状态转移）和"业务动作"（检索/改写/生成/门控）拆开，
+        新增状态只需加一个 handler 并调整返回值，不动业务实现。
+        """
         started = time.perf_counter()
-        planning_started = time.perf_counter()
-        trace: list[AgentTraceStep] = []
-
-        current_query = self._normalize_query(request.question)
-        trace.append(
-            AgentTraceStep(
-                state="plan",
-                action="plan_retrieval",
-                query=current_query,
-                notes="先检索一次，证据不足时最多进行一次查询改写重试。",
-            )
+        runtime = _AgentRuntime(
+            question=request.question,
+            strategy=request.retrieval_strategy,
+            max_rounds=request.max_retrieval_rounds,
+            current_query=request.question,
         )
-        planning_latency = int((time.perf_counter() - planning_started) * 1000)
 
-        total_retrieval_latency = 0
-        best_result: SearchResponseData | None = None
-        executed_rounds = 0
-
-        for round_index in range(request.max_retrieval_rounds):
-            executed_rounds += 1
-            retrieval_started = time.perf_counter()
-            retrieval_result = self.retrieval.search(
-                SearchRequest(
-                    query=current_query,
-                    top_k=request.top_k,
-                    strategy=request.retrieval_strategy,
-                    filters=request.filters,
-                    user_context=request.user_context,
-                ),
+        state: AgentState | None = AgentState.PLAN
+        while state is not None:
+            state = self._advance(
+                state,
+                runtime,
+                request,
                 trusted_user_context=trusted_user_context,
                 authenticated_identity_required=authenticated_identity_required,
             )
-            total_retrieval_latency += int((time.perf_counter() - retrieval_started) * 1000)
 
-            evidence_threshold = self._evidence_threshold(request.retrieval_strategy)
-            sufficient = self._has_sufficient_evidence(
-                retrieval_result.hits,
+        total_latency = int((time.perf_counter() - started) * 1000)
+        return AgentAnswerResponseData(
+            answer=runtime.answer,
+            answer_status=runtime.answer_status,
+            final_query=runtime.current_query,
+            retrieval_rounds=runtime.executed_rounds,
+            citations=runtime.result_to_use.hits,
+            matched_documents=self._build_matched_documents(runtime.result_to_use.hits),
+            filters_applied=runtime.result_to_use.filters_applied,
+            trace=runtime.trace,
+            latency_ms=AgentLatencyBreakdown(
+                planning=runtime.planning_latency,
+                retrieval=runtime.total_retrieval_latency,
+                generation=runtime.generation_latency,
+                total=total_latency,
+            ),
+        )
+
+    def _advance(
+        self,
+        state: AgentState,
+        runtime: _AgentRuntime,
+        request: AgentAnswerRequest,
+        *,
+        trusted_user_context: bool,
+        authenticated_identity_required: bool,
+    ) -> AgentState | None:
+        """状态转移：执行当前状态的动作，返回下一个状态。
+
+        面试点：为什么把转移抽成 _advance 而不是写死在 answer 里？
+        答：显式转移表让状态机和业务动作解耦——新增状态（如 clarify、escalate）
+        只需增加一个 handler 分支并调整返回值，不动检索/改写/生成的业务实现；
+        将来迁图框架时，每个 handler 就是一个现成的图节点。
+        """
+        if state is AgentState.PLAN:
+            return self._run_plan(runtime, request)
+        if state is AgentState.RETRIEVE:
+            return self._run_retrieve(
+                runtime,
+                request,
+                trusted_user_context=trusted_user_context,
+                authenticated_identity_required=authenticated_identity_required,
+            )
+        if state is AgentState.REWRITE:
+            return self._run_rewrite(runtime, request)
+        if state is AgentState.ANSWER:
+            return self._run_answer(runtime, request)
+        if state is AgentState.FINISH:
+            return self._run_finish(runtime)
+        raise RuntimeError(f"未知状态: {state}")
+
+    def _run_plan(self, runtime: _AgentRuntime, request: AgentAnswerRequest) -> AgentState:
+        """plan 状态：标准化查询并记录规划步骤。"""
+        planning_started = time.perf_counter()
+        runtime.current_query = self._normalize_query(request.question)
+        runtime.trace.append(
+            AgentTraceStep(
+                state=AgentState.PLAN.value,
+                action="plan_retrieval",
+                query=runtime.current_query,
+                notes="先检索一次，证据不足时最多进行一次查询改写重试。",
+            )
+        )
+        runtime.planning_latency = int((time.perf_counter() - planning_started) * 1000)
+        return AgentState.RETRIEVE
+
+    def _run_retrieve(
+        self,
+        runtime: _AgentRuntime,
+        request: AgentAnswerRequest,
+        *,
+        trusted_user_context: bool,
+        authenticated_identity_required: bool,
+    ) -> AgentState:
+        """retrieve 状态：执行检索 + 证据门控，决定下一步。
+
+        转移规则：
+          - 证据充分 → answer
+          - 证据不足且还有改写轮次 → rewrite
+          - 证据不足且已用尽轮次 → answer（将走拒答）
+        """
+        retrieval_started = time.perf_counter()
+        retrieval_result = self.retrieval.search(
+            SearchRequest(
+                query=runtime.current_query,
+                top_k=request.top_k,
+                strategy=request.retrieval_strategy,
+                filters=request.filters,
+                user_context=request.user_context,
+            ),
+            trusted_user_context=trusted_user_context,
+            authenticated_identity_required=authenticated_identity_required,
+        )
+        runtime.total_retrieval_latency += int((time.perf_counter() - retrieval_started) * 1000)
+        runtime.executed_rounds += 1
+        runtime.last_retrieval = retrieval_result
+
+        evidence_threshold = self._evidence_threshold(request.retrieval_strategy)
+        sufficient = self._has_sufficient_evidence(
+            retrieval_result.hits,
+            evidence_threshold=evidence_threshold,
+        )
+        top_score = retrieval_result.hits[0].score if retrieval_result.hits else None
+        runtime.trace.append(
+            AgentTraceStep(
+                state=AgentState.RETRIEVE.value,
+                action=f"retrieve_round_{runtime.round_index + 1}",
+                query=runtime.current_query,
+                hit_count=len(retrieval_result.hits),
+                top_score=top_score,
+                sufficient_evidence=sufficient,
                 evidence_threshold=evidence_threshold,
+                notes=f"使用 {request.retrieval_strategy} 检索策略并应用策略阈值。",
             )
-            top_score = retrieval_result.hits[0].score if retrieval_result.hits else None
-            trace.append(
+        )
+        runtime.best_result = self._pick_better_result(runtime.best_result, retrieval_result)
+
+        if sufficient:
+            return AgentState.ANSWER
+        if runtime.round_index + 1 >= request.max_retrieval_rounds:
+            return AgentState.ANSWER
+        return AgentState.REWRITE
+
+    def _run_rewrite(self, runtime: _AgentRuntime, request: AgentAnswerRequest) -> AgentState:
+        """rewrite 状态：查询改写，改写成功回到检索，无变化则进入回答。"""
+        # REWRITE 只能由 RETRIEVE 进入，此时 last_retrieval 必已设置
+        assert runtime.last_retrieval is not None
+        rewritten_query = self._rewrite_query(
+            original_question=request.question,
+            current_query=runtime.current_query,
+            retrieval_result=runtime.last_retrieval,
+        )
+        if rewritten_query == runtime.current_query:
+            runtime.trace.append(
                 AgentTraceStep(
-                    state="retrieve",
-                    action=f"retrieve_round_{round_index + 1}",
-                    query=current_query,
-                    hit_count=len(retrieval_result.hits),
-                    top_score=top_score,
-                    sufficient_evidence=sufficient,
-                    evidence_threshold=evidence_threshold,
-                    notes=f"使用 {request.retrieval_strategy} 检索策略并应用策略阈值。",
+                    state=AgentState.FINISH.value,
+                    action="skip_rewrite",
+                    query=runtime.current_query,
+                    notes="未生成更有效的改写查询，结束重试。",
                 )
             )
-
-            best_result = self._pick_better_result(best_result, retrieval_result)
-            if sufficient:
-                break
-            if round_index + 1 >= request.max_retrieval_rounds:
-                break
-
-            rewritten_query = self._rewrite_query(
-                original_question=request.question,
-                current_query=current_query,
-                retrieval_result=retrieval_result,
+            return AgentState.ANSWER
+        runtime.trace.append(
+            AgentTraceStep(
+                state=AgentState.REWRITE.value,
+                action="rewrite_query",
+                query=rewritten_query,
+                notes="首轮证据不足，执行一次查询改写后重试。",
             )
-            if rewritten_query == current_query:
-                trace.append(
-                    AgentTraceStep(
-                        state="finish",
-                        action="skip_rewrite",
-                        query=current_query,
-                        notes="未生成更有效的改写查询，结束重试。",
-                    )
-                )
-                break
-            trace.append(
-                AgentTraceStep(
-                    state="rewrite",
-                    action="rewrite_query",
-                    query=rewritten_query,
-                    notes="首轮证据不足，执行一次查询改写后重试。",
-                )
-            )
-            current_query = rewritten_query
+        )
+        runtime.current_query = rewritten_query
+        runtime.round_index += 1
+        return AgentState.RETRIEVE
 
+    def _run_answer(self, runtime: _AgentRuntime, request: AgentAnswerRequest) -> AgentState:
+        """answer 状态：生成回答 / LLM 降级 / 证据不足拒答。"""
         generation_started = time.perf_counter()
-        result_to_use = best_result or self._empty_result(request.question)
+        runtime.result_to_use = runtime.best_result or self._empty_result(request.question)
         final_threshold = self._evidence_threshold(request.retrieval_strategy)
-        if result_to_use.hits and self._has_sufficient_evidence(
-            result_to_use.hits,
+        if runtime.result_to_use.hits and self._has_sufficient_evidence(
+            runtime.result_to_use.hits,
             evidence_threshold=final_threshold,
         ):
             try:
-                answer = self._generate_grounded_answer(
+                runtime.answer = self._generate_grounded_answer(
                     question=request.question,
-                    citations=result_to_use.hits,
+                    citations=runtime.result_to_use.hits,
                     generation_options=request.generation_options,
                 )
-                answer_status = "grounded"
-                trace.append(
+                runtime.answer_status = "grounded"
+                runtime.trace.append(
                     AgentTraceStep(
-                        state="answer",
+                        state=AgentState.ANSWER.value,
                         action="generate_grounded_answer",
-                        query=current_query,
-                        hit_count=len(result_to_use.hits),
+                        query=runtime.current_query,
+                        hit_count=len(runtime.result_to_use.hits),
                         sufficient_evidence=True,
                         notes="证据充足，生成带引用回答。",
                     )
                 )
             except Exception:
                 logger.exception("LLM generation failed, degrading to evidence-only response")
-                answer_status = "degraded"
-                answer = self._build_degraded_response(result_to_use.hits)
-                trace.append(
+                runtime.answer_status = "degraded"
+                runtime.answer = self._build_degraded_response(runtime.result_to_use.hits)
+                runtime.trace.append(
                     AgentTraceStep(
-                        state="answer",
+                        state=AgentState.ANSWER.value,
                         action="degraded_llm_unavailable",
-                        query=current_query,
-                        hit_count=len(result_to_use.hits),
+                        query=runtime.current_query,
+                        hit_count=len(runtime.result_to_use.hits),
                         sufficient_evidence=True,
                         notes="LLM 不可用，降级为仅返回检索证据，拒绝编造。",
                     )
                 )
         else:
-            answer_status = "insufficient_evidence"
-            answer = "未找到足够依据，已执行检索和一次改写重试，建议缩小问题范围或补充筛选条件。"
-            trace.append(
+            runtime.answer_status = "insufficient_evidence"
+            runtime.answer = "未找到足够依据，已执行检索和一次改写重试，建议缩小问题范围或补充筛选条件。"
+            runtime.trace.append(
                 AgentTraceStep(
-                    state="answer",
+                    state=AgentState.ANSWER.value,
                     action="return_insufficient_evidence",
-                    query=current_query,
-                    hit_count=len(result_to_use.hits),
+                    query=runtime.current_query,
+                    hit_count=len(runtime.result_to_use.hits),
                     sufficient_evidence=False,
                     notes="两轮内证据仍不足，拒绝编造答案。",
                 )
             )
-        generation_latency = int((time.perf_counter() - generation_started) * 1000)
+        runtime.generation_latency = int((time.perf_counter() - generation_started) * 1000)
+        return AgentState.FINISH
 
-        trace.append(
+    def _run_finish(self, runtime: _AgentRuntime) -> AgentState | None:
+        """finish 状态：汇总执行结果，返回 None 终止状态循环。"""
+        runtime.trace.append(
             AgentTraceStep(
-                state="finish",
+                state=AgentState.FINISH.value,
                 action="complete",
-                query=current_query,
-                hit_count=len(result_to_use.hits),
-                sufficient_evidence=answer_status in ("grounded", "degraded"),
+                query=runtime.current_query,
+                hit_count=len(runtime.result_to_use.hits),
+                sufficient_evidence=runtime.answer_status in ("grounded", "degraded"),
                 notes="智能体执行结束。",
             )
         )
-
-        total_latency = int((time.perf_counter() - started) * 1000)
-        return AgentAnswerResponseData(
-            answer=answer,
-            answer_status=answer_status,
-            final_query=current_query,
-            retrieval_rounds=executed_rounds,
-            citations=result_to_use.hits,
-            matched_documents=self._build_matched_documents(result_to_use.hits),
-            filters_applied=result_to_use.filters_applied,
-            trace=trace,
-            latency_ms=AgentLatencyBreakdown(
-                planning=planning_latency,
-                retrieval=total_retrieval_latency,
-                generation=generation_latency,
-                total=total_latency,
-            ),
-        )
+        return None
 
     @staticmethod
     def _normalize_query(question: str) -> str:
@@ -297,17 +432,14 @@ class QaAgentService:
         return normalized or current_query
  
     def _evidence_threshold(self, strategy: str) -> float:
-        """获取证据阈值：根据检索策略返回对应的分数阈值。
+        """获取证据阈值：RRF 融合分是排名信号，门控改用 Dense 余弦分（vector_score）。
 
-        面试点：为什么 hybrid 和 dense 使用不同的阈值？
-        答：混合检索的融合得分经过 Min-Max 归一化，分布与纯稠密得分不同，
-        因此需要独立的阈值来正确判断证据是否充分。
+        面试点：为什么 hybrid 和 dense 现在共用同一阈值？
+        答：RRF 融合分只反映排名、不反映相关性强度，不能当门控门槛；
+        门控改用 vector_score（Dense 余弦分），hybrid 与 dense 是同一量纲，
+        因此共用 evidence_threshold_dense 一个阈值。
         """
-        return (
-            self.settings.evidence_threshold_hybrid
-            if strategy == "hybrid"
-            else self.settings.evidence_threshold_dense
-        )
+        return self.settings.evidence_threshold_dense
 
     @staticmethod
     def _has_sufficient_evidence(
@@ -318,17 +450,17 @@ class QaAgentService:
         """证据门控：判断检索结果是否提供了足够的证据来生成可靠回答。
 
         判断标准（双重检查）：
-        1. 首条命中的得分 >= 证据阈值（主条件）
+        1. 首条命中的 vector_score（Dense 余弦分）>= 证据阈值（主条件）
         2. 如果有 BM25 text_score，text_score >= 0.2（辅助条件）
 
-        面试点：为什么还要检查 text_score？
-        答：向量得分高可能只是语义相似，但可能不包含精确关键词。
-        text_score >= 0.2 确保至少部分关键词匹配，提高回答可靠性。
+        面试点：为什么不用 RRF 融合分（top.score）当门控门槛？
+        答：RRF 分是排名信号（约 0.016~0.033），不反映相关性强度；
+        门控需要"绝对相关性"，所以改用 vector_score（余弦分 [0,1]）。
         """
         if not citations:
             return False  # 无任何命中 → 证据不足
         top = citations[0]
-        if top.score < evidence_threshold:  # 主条件：得分低于阈值
+        if top.vector_score is not None and top.vector_score < evidence_threshold:  # 主条件：余弦分低于阈值
             return False
         if top.text_score is not None and top.text_score < 0.2:  # 辅助条件：关键词得分过低
             return False

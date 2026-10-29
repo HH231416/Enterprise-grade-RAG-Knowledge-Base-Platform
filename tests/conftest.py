@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 
 import fitz
@@ -17,8 +20,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-TEST_DB_PATH = Path("/private/tmp/oa_rag_test.sqlite3")
-TEST_STORAGE_ROOT = Path("/private/tmp/oa_rag_test_data")
+# 测试数据库与存储目录必须落在会话级临时目录。
+#
+# 固定路径（如 /private/tmp/oa_rag_test.sqlite3）会带来三类问题：
+#   1. 多测试文件同进程运行时共享同一 sqlite，fixture 互相破坏 schema；
+#   2. 上次运行残留文件导致下次 create_all 报 "table already exists"；
+#   3. 需要反复手工删除固定文件才能通过。
+#
+# 改为 pytest 提供的 tmp_path_factory 生成独立目录，既避免冲突，
+# 也让每个测试会话的存储目录随会话结束而清理。
+_TMP_ROOT = Path(tempfile.gettempdir()) / "oa_rag_pytest"
+_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+_RUN_ID = uuid.uuid4().hex[:10]
+TEST_DB_PATH = _TMP_ROOT / f"{_RUN_ID}.sqlite3"
+TEST_STORAGE_ROOT = _TMP_ROOT / f"{_RUN_ID}_data"
 
 os.environ["DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH}"
 os.environ["STORAGE_ROOT"] = str(TEST_STORAGE_ROOT)
@@ -75,15 +90,11 @@ def reset_environment(monkeypatch):
     monkeypatch.setenv("LLM_MODEL", "")
     monkeypatch.setenv("ZILLIZ_URI", "")
     monkeypatch.setenv("ZILLIZ_TOKEN", "")
+    # 会话级独立路径，无需删除既有文件；若上次异常退出残留则先清理
     if TEST_DB_PATH.exists():
         TEST_DB_PATH.unlink()
     if TEST_STORAGE_ROOT.exists():
-        for path in sorted(TEST_STORAGE_ROOT.rglob("*"), reverse=True):
-            if path.is_file():
-                path.unlink()
-            elif path.is_dir():
-                path.rmdir()
-        TEST_STORAGE_ROOT.rmdir()
+        shutil.rmtree(TEST_STORAGE_ROOT, ignore_errors=True)
 
     reset_settings_cache()
     reset_db_runtime()
@@ -92,12 +103,24 @@ def reset_environment(monkeypatch):
     settings = get_settings()
     settings.ensure_storage_dirs()
     Base.metadata.create_all(bind=get_engine())
-    yield
-    BackgroundJobRunner.shutdown()
-    VectorStoreClient._local_store.clear()
-    SparseIndexProvider().build_index([])
-    reset_db_runtime()
-    reset_settings_cache()
+    try:
+        yield
+    finally:
+        # 无论断言是否失败都还原运行时状态，避免影响后续测试
+        BackgroundJobRunner.shutdown()
+        VectorStoreClient._local_store.clear()
+        SparseIndexProvider().build_index([])
+        # 先释放连接再删除文件，避免 Windows 上文件被占用导致删不掉
+        reset_db_runtime()
+        reset_settings_cache()
+        if TEST_DB_PATH.exists():
+            try:
+                TEST_DB_PATH.unlink()
+            except OSError:
+                pass
+        if TEST_STORAGE_ROOT.exists():
+            shutil.rmtree(TEST_STORAGE_ROOT, ignore_errors=True)
+
 
 
 @pytest.fixture

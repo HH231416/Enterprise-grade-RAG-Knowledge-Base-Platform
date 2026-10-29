@@ -205,9 +205,40 @@ class Settings(BaseSettings):
     agent_query_rewrite_mode: str = "auto"
     agent_query_rewrite_max_tokens: int = 96
     retrieval_strategy: str = "hybrid"
-    hybrid_fusion_alpha: float = 0.7
+    rrf_k: float = 60.0
     evidence_threshold_dense: float = 0.35
     evidence_threshold_hybrid: float = 0.55
+
+    # ---------------- 图增强检索（第一版：仅公开校园制度与办事指南）----------------
+    # 总开关。关闭时问答链路行为与改造前完全一致，不启用任何图检索。
+    graph_enabled: bool = False
+    # 存储实现：memory | neo4j。默认 memory，可在无 Neo4j 环境完成隔离验证。
+    graph_store_provider: str = "memory"
+    neo4j_uri: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("NEO4J_URI", "neo4j_uri"),
+    )
+    neo4j_user: str | None = Field(
+        default="neo4j",
+        validation_alias=AliasChoices("NEO4J_USER", "neo4j_user"),
+    )
+    neo4j_password: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("NEO4J_PASSWORD", "neo4j_password"),
+    )
+    neo4j_database: str = Field(
+        default="neo4j",
+        validation_alias=AliasChoices("NEO4J_DATABASE", "neo4j_database"),
+    )
+    # 图检索是否允许进入在线问答链路。构图可独立开启，便于先建图后检索。
+    graph_retrieval_enabled: bool = False
+    # 单次图扩展返回的关系上限
+    graph_expand_limit: int = 50
+    # 图关系问题的必要关系类型；缺任一类型时判定证据不完整并澄清。
+    graph_required_relations: str = "handled_by,requires_material"
+    # 抽取器名称与提示模板版本，写入批次以便复核
+    graph_extractor_name: str = "llm-constrained-v1"
+    graph_prompt_template_version: str = "campus-procedure-v1"
 
     dify_base_url: str = "http://127.0.0.1:8000"
     dify_app_key: str | None = None
@@ -467,7 +498,6 @@ class Settings(BaseSettings):
         if self.answer_judge_max_tokens <= 0:
             raise ValueError("ANSWER_JUDGE_MAX_TOKENS must be greater than 0.")
         for name, value in (
-            ("HYBRID_FUSION_ALPHA", self.hybrid_fusion_alpha),
             ("EVIDENCE_THRESHOLD_DENSE", self.evidence_threshold_dense),
             ("EVIDENCE_THRESHOLD_HYBRID", self.evidence_threshold_hybrid),
             ("ANSWER_JUDGE_MIN_FAITHFULNESS", self.answer_judge_min_faithfulness),
@@ -475,6 +505,8 @@ class Settings(BaseSettings):
         ):
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be between 0 and 1.")
+        if self.rrf_k < 1.0:
+            raise ValueError("RRF_K must be >= 1.0.")
         self.evaluation_retrieval_user_id = self._normalize_text(
             self.evaluation_retrieval_user_id,
             default="evaluation-service",

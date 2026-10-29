@@ -28,7 +28,7 @@ data:
   EMBEDDING_PROVIDER: tei
   EMBEDDING_VECTOR_SIZE: "1024"
   RETRIEVAL_STRATEGY: hybrid
-  HYBRID_FUSION_ALPHA: "0.7"
+  RRF_K: "60"
   RERANK_ENABLED: "true"
   RERANK_PROVIDER: tei
   RERANK_API_BASE: http://tei-reranker.ai-platform.svc.cluster.local/rerank
